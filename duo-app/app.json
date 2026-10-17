@@ -25,8 +25,7 @@
       ],
       "adaptiveIcon": {
         "backgroundColor": "#0E0B14"
-      },
-      "edgeToEdgeEnabled": true
+      }
     },
     "web": {
       "bundler": "metro"
