@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "Duo",
+    "slug": "duo-app",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "duoapp",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0E0B14"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.duo.app"
+    },
+    "android": {
+      "package": "com.duo.app",
+      "versionCode": 1,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#0E0B14"
+      },
+      "edgeToEdgeEnabled": true
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-image-picker",
+      [
+        "expo-notifications",
+        {
+          "color": "#FF4D6D"
+        }
+      ]
+    ]
+  }
+}

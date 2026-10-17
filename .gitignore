@@ -1,0 +1,28 @@
+# Dependencias
+node_modules/
+
+# Build de Expo / React Native
+.expo/
+android/
+ios/
+dist/
+web-build/
+
+# Base de datos y artefactos del servidor (privados, por pareja)
+duo-server/duo.db
+duo-server/duo.db-shm
+duo-server/duo.db-wal
+duo-server/uploads/
+duo-server/server.out
+duo-server/server.err
+
+# Logs y entorno
+*.log
+.env
+.env.*
+
+# SO / editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
