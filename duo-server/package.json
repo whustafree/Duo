@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node test/socket-test.js"
+    "test": "node test/socket-test.js",
+    "test:e2e": "node test/e2e-test.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",

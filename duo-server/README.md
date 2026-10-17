@@ -75,12 +75,11 @@ Servidor emite:
 Con el servidor corriendo:
 
 ```bash
-npm test    # o: node test/socket-test.js
+npm test         # sockets + auth + persistencia (15 verificaciones)
+npm run test:e2e # flujo integral con el crypto REAL de la app:
+                 # A y B se vinculan, texto y foto de extremo a extremo,
+                 # historial descifrable, tercero excluido
 ```
-
-Cubre: creación/unión con token, rechazo de intrusos (REST y socket), paso de
-ciphertext, prevención de inyección a otras salas, typing y subida de fotos
-cifradas.
 
 ## Notas
 
