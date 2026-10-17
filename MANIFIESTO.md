@@ -99,18 +99,22 @@ duo-server/
 
 ## 3.bis Backend (API)
 
-| Método | Ruta | Descripción |
-| ------ | ---- | ----------- |
-| GET  | `/health` | Estado del servidor |
-| POST | `/api/pair/create` | Crea pareja + código |
-| POST | `/api/pair/join`   | Se une con el código |
-| GET  | `/api/couple/:coupleId?userId=` | Info de la pareja |
-| GET  | `/api/messages/:coupleId` | Historial |
-| POST | `/api/upload` | Sube foto (multipart) |
-| GET  | `/uploads/:archivo` | Sirve fotos |
+Todas las rutas privadas requieren el header `x-duo-token` (secreto de la
+pareja) y que el `userId` sea miembro de la pareja.
 
-Socket.io: `join`, `message`, `typing` (cliente) → `message`, `typing`,
-`partner_joined` (servidor).
+| Método | Ruta | Auth | Descripción |
+| ------ | ---- | ---- | ----------- |
+| GET  | `/health` | — | Estado del servidor |
+| POST | `/api/pair/create` | — | Crea pareja + código + token. Body `{ name, emoji, pubKey }` |
+| POST | `/api/pair/join`   | — | Se une con el código |
+| GET  | `/api/couple/:coupleId?userId=` | token | Info de la pareja |
+| GET  | `/api/messages/:coupleId?userId=` | token | Historial (texto cifrado) |
+| POST | `/api/photo` | token | Foto **ya cifrada** (base64 del ciphertext) |
+| GET  | `/uploads/:archivo` | — | Archivos `.bin` cifrados (inútiles sin la clave) |
+
+Socket.io: `join {coupleId,userId,token}` (validado), `message {ciphertextB64,
+nonce}`, `typing {isTyping}` → `message`, `typing`, `partner_joined`,
+`auth_error`.
 
 ---
 
@@ -150,26 +154,27 @@ eas build -p android --profile preview   # APK instalable
 - [x] Maqueta completa de UI (todas las pantallas).
 - [x] Backend Node + Express + Socket.io.
 - [x] Base de datos SQLite (`node:sqlite`, sin dependencias nativas).
-- [x] Vinculación por código (máx. 2 personas).
+- [x] Vinculación por código (máx. 2 personas) con **token secreto por pareja**.
 - [x] Chat en tiempo real + indicador "escribiendo…".
-- [x] Subida de fotos (Multer).
-- [x] Persistencia de sesión (AsyncStorage).
+- [x] Fotos: cifradas en el dispositivo, guardadas cifradas en el server.
+- [x] Persistencia de sesión + **caché local del historial** (AsyncStorage) y
+      fotos descifradas guardadas en el dispositivo.
 - [x] Notificaciones locales.
-- [x] Cifrado E2E de mensajes de texto (X25519 + AES-256-GCM).
-- [x] Config de build con EAS.
-- [x] Tests del servidor (`duo-server/test/socket-test.js`).
+- [x] Cifrado E2E **completo** de textos y fotos (X25519 + AES-256-GCM).
+- [x] Autorización REST + sockets (sin token no hay acceso; sin inyección).
+- [x] Tests del servidor (`duo-server/test/socket-test.js`, 15 verificaciones).
+- [x] Repo en GitHub: https://github.com/whustafree/Duo
+- [x] Build automático de APK con GitHub Actions (`.github/workflows/build-apk.yml`).
 
 ---
 
 ## 6. Pendientes / ideas
 
-- [ ] Cifrado E2E también para **fotos** (blob cifrado).
 - [ ] Notificaciones **push reales** en segundo plano (requiere development build).
 - [ ] Persistencia del servidor en un VPS/cloud con HTTPS (wss).
-- [ ] Manejo de reconexión y contador de no leídos.
 - [ ] Más juegos y retos; editar/crear retos propios.
 - [ ] Borrar historial / fotos desde la app.
-- [ ] Publicar en Play Store.
+- [ ] Publicar en Play Store (firma de release + AAB).
 
 ---
 
@@ -185,6 +190,11 @@ eas build -p android --profile preview   # APK instalable
 
 ## 8. Privacidad
 
-- Cada pareja tiene su propia sala; solo sus 2 miembros acceden.
-- Los textos van cifrados E2E (el servidor no los descifra).
-- Las fotos aún se almacenan sin cifrar en el servidor (pendiente).
+- Cada pareja tiene su propia sala y un **token secreto**: sin él no hay acceso
+  a mensajes, fotos ni sockets.
+- Los textos **y las fotos** van cifrados E2E: el servidor no puede leerlos.
+- Cada dispositivo guarda su **copia local** del historial y de las fotos
+  descifradas (almacenamiento de la app).
+- Las claves privadas nunca salen del dispositivo; si se pierde el equipo se
+  pierden esas claves (el partner puede re-descifrar lo guardado en el server
+  porque también tiene su par de claves).

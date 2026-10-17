@@ -51,16 +51,17 @@ App privada de pareja con:
 - [x] Maqueta completa de UI (todas las pantallas).
 - [x] Backend Node + Express + Socket.io.
 - [x] Base de datos SQLite con `node:sqlite` (sin dependencias nativas).
-- [x] Vinculación por código (máx. 2 por pareja).
-6. [x] Chat en tiempo real + "escribiendo…".
-7. [x] Subida de fotos (Multer).
-8. [x] Persistencia de sesión (AsyncStorage).
-9. [x] Notificaciones locales (expo-notifications).
-10. [x] Cifrado E2E de textos (noble-curves/ciphers/hashes).
-11. [x] Configuración de build con EAS (`eas.json`).
-12. [x] Test automático del backend (`duo-server/test/socket-test.js`).
-10. [ ] **No verificado**: build real de APK (requiere PC/cuenta Expo/EAS).
-11. [ ] Pendiente: E2E para fotos, push real en background, HTTPS en producción.
+- [x] Vinculación por código (máx. 2 por pareja) + **token secreto por pareja**.
+- [x] Chat en tiempo real + "escribiendo…".
+- [x] Fotos cifradas en el cliente; el servidor solo guarda bytes ilegibles.
+- [x] Persistencia de sesión + **historial cacheado en cada dispositivo**.
+- [x] Notificaciones locales (expo-notifications).
+- [x] Cifrado E2E de textos **y fotos** (noble-curves/ciphers/hashes).
+- [x] Autorización en REST y sockets (token + membresía; sin inyección).
+- [x] Test automático del backend (15 verificaciones).
+- [x] Repo público en GitHub: https://github.com/whustafree/Duo
+- [x] Build de APK por GitHub Actions (`.github/workflows/build-apk.yml`).
+- [ ] Push real en background, HTTPS en producción, Play Store.
 
 ---
 
@@ -68,10 +69,10 @@ App privada de pareja con:
 
 | Componente | Estado | Cómo se verificó |
 | ---------- | ------ | ---------------- |
-| Backend (REST + sockets) | ✅ Probado | `node duo-server/test/socket-test.js` (crea pareja, une, mensaje, typing, persistencia) |
-| Sintaxis de la app | ✅ Validada | Parser Babel (23 archivos JS/JSX, 0 errores) |
-| Ejecución de Metro/Expo | ⚠️ No en Termux | Falla por resolución de módulos de metro en Termux |
-| Generación de APK | ⏳ Pendiente | Requiere PC o EAS |
+| Backend (REST + sockets + auth) | ✅ Probado | `npm test` en `duo-server`: 15/15 (token, 401 sin token, ciphertext, anti-inyección, fotos) |
+| Criptografía del cliente | ✅ Probada | Round-trip A↔B con claves reales: base64, UTF-8, texto y fotos; un tercero con otra clave no descifra |
+| Sintaxis de la app | ✅ Validada | Parser Babel (22 archivos JS, 0 errores) |
+| Build de APK | ✅ Automatizado | GitHub Actions: `expo prebuild` + `gradlew assembleRelease` → artefacto `duo-apk` |
 
 ---
 
@@ -174,7 +175,14 @@ El firewall del PC debe permitir el puerto **4000** (y **8081** para Metro).
 
 ## 6. Generar la APK
 
-### Opción A — EAS Build (recomendada, en la nube)
+### Opción A — GitHub Actions (recomendada, sin cuenta Expo)
+
+El repo tiene `.github/workflows/build-apk.yml`: con cada push a `main` que toque
+`duo-app/` (o manualmente desde *Actions → Run workflow*), Actions compila el
+APK en la nube y lo deja en **Actions → Build APK → artefacto `duo-apk`**
+(descargable desde ahí, retención de 90 días).
+
+### Opción B — EAS Build (nube de Expo)
 
 ```bash
 cd duo-app
@@ -201,7 +209,7 @@ activando "Fuentes desconocidas".
 }
 ```
 
-### Opción B — Build local (requiere Android SDK + JDK 17)
+### Opción C — Build local (requiere Android SDK + JDK 17)
 
 ```bash
 cd duo-app
@@ -230,41 +238,52 @@ cd android
 ### 7.2 Mensajes (socket.io)
 
 Cliente emite:
-- `join` → `{ coupleId, userId }`
-- `message` → `{ coupleId, senderId, text?, ciphertextB64 }`
-- `typing` → `{ coupleId, userId, isTyping }`
+- `join` → `{ coupleId, userId, token }` (validado por el servidor)
+- `message` → `{ ciphertextB64, nonce }` (el `coupleId`/`senderId` se toman de
+  lo validado en el `join`, no del cliente)
+- `typing` → `{ isTyping }`
 
 Servidor emite:
-- `message` (persistido; reenvía `ciphertextB64` + `nonce` tal cual)
+- `message` (persistido; `ciphertextB64` para textos, `url` para fotos)
 - `typing` → `{ userId, isTyping }`
 - `partner_joined` → `{ partner }`
+- `auth_error` → `{ error }` (token inválido)
 
-### 7.3 Cifrado E2E
+### 7.3 Cifrado E2E (textos y fotos)
 
 - Cliente: `@noble/curves` (X25519) + `@noble/hashes` (HKDF-SHA256) +
-  `@noble/ciphers` (AES-256-GCM).
+  `@noble/ciphers` (AES-256-GCM, export `gcm`).
 - Claves privadas: se guardan en el dispositivo (AsyncStorage), **nunca** al server.
-- El servidor solo almacena y retransmite el texto cifrado (`ciphertextB64`, `nonce`).
-- **Pendiente**: cifrar también las fotos (hoy se guardan en claro en el server).
+- El servidor solo almacena y retransmite texto cifrado (`ciphertext`, `nonce`).
+- Las fotos se cifran en el dispositivo y se suben como base64 del ciphertext;
+  el server las guarda como `.bin` ilegibles en `uploads/`.
+- El cliente descarga la foto cifrada, la descifra y la guarda como archivo
+  local en el dispositivo (copia local).
+- Helpers base64/UTF-8 hechos a mano (sin `Buffer` ni `TextEncoder`): Hermes no
+  los expone en React Native.
+- **Nota**: `@noble/ciphers` v1.3 exporta `gcm`, no `aes256gcm`.
 
 ### 7.4 Base de datos (SQLite)
 
-Tablas: `users` (con `pub_key`), `couples`, `couple_members`, `messages`
-(con `nonce` + `text`/`url`).
+Tablas: `users` (con `pub_key`), `couples` (con `token` secreto),
+`couple_members`, `messages` (con `nonce` + `ciphertext` + `text`/`url`).
+Las migraciones de columnas se aplican solas al arrancar.
 
 ---
 
 ## 8. Endpoints del backend
 
-| Método | Ruta | Descripción |
-| ------ | ---- | ----------- |
-| GET  | `/health` | Estado |
-| POST | `/api/pair/create` | Body `{ name, emoji, pubKey }` |
-| POST | `/api/pair/join` | Body `{ code, name, emoji, pubKey }` |
-| GET  | `/api/couple/:coupleId?userId=` | Info pareja |
-| GET  | `/api/messages/:coupleId` | Historial |
-| POST | `/api/upload` | Multipart `coupleId`, `senderId`, `photo` |
-| GET  | `/uploads/:archivo` | Fotos |
+| Método | Ruta | Auth | Descripción |
+| ------ | ---- | ---- | ----------- |
+| GET  | `/health` | — | Estado |
+| POST | `/api/pair/create` | — | Body `{ name, emoji, pubKey }` → `userId`, `coupleId`, `code`, `token` |
+| POST | `/api/pair/join` | — | Body `{ code, name, emoji, pubKey }` |
+| GET  | `/api/couple/:coupleId?userId=` | token | Info pareja |
+| GET  | `/api/messages/:coupleId?userId=` | token | Historial |
+| POST | `/api/photo` | token | Body `{ coupleId, senderId, nonceB64, imageDataB64 }` (foto cifrada) |
+| GET  | `/uploads/:archivo` | — | Archivos `.bin` cifrados |
+
+Auth = header `x-duo-token: <token de la pareja>` + `userId` miembro de la pareja.
 
 ---
 
@@ -283,31 +302,29 @@ Tablas: `users` (con `pub_key`), `couples`, `couple_members`, `messages`
 
 ## 10. Checklist para OpenCode (hacer desde el PC)
 
-1. [ ] `cd duo-server && npm install && npm start` (verificar `/health`).
-2. [ ] `cd duo-app && npm install` (en red estable).
-3. [ ] Editar `duo-app/src/config.js` con la IP del PC.
-4. [ ] `npx expo start` y probar en **Expo Go**:
-   - crear vínculo en un dispositivo, unirse desde otro,
-   - enviar texto, foto, y ver "escribiendo…".
-5. [ ] (Opcional) `npm test` en `duo-server` para validar sockets.
-6. [ ] `eas login` + `eas build -p android --profile preview` → APK.
+1. [x] `cd duo-server && npm install && npm start` (verificar `/health`).
+2. [x] `cd duo-app && npm install`.
+3. [x] Editar `duo-app/src/config.js` con la IP del PC (o dominio del server).
+4. [ ] Probar en dos celulares con **Expo Go**: crear vínculo, unirse, texto,
+   foto y "escribiendo…".
+5. [x] `npm test` en `duo-server` (15/15).
+6. [x] APK vía GitHub Actions (o `eas login` + `eas build -p android --profile preview`).
 7. [ ] Instalar la APK en Android y repetir las pruebas.
-8. [ ] (Pendiente) Implementar E2E para fotos.
-9. [ ] (Pendiente) Push real en background (development build).
+8. [ ] (Pendiente) Push real en background (development build).
+9. [ ] (Pendiente) HTTPS/WSS al desplegar el server públicamente.
 
 ---
 
 ## 11. Roadmap sugerido
 
-1. **E2E de fotos**: cifrar el blob antes de subir; descifrar al recibir.
+1. **Deploy del backend** en VPS con HTTPS/WSS (ej. Railway, Fly.io, Render) y
+   dominio; actualizar `config.js`.
 2. **Push en background**: `expo-notifications` + development build + servidor de
    push (Expo Push o FCM).
-3. **Deploy del backend** en VPS con HTTPS/WSS (ej. Railway, Fly.io, Render) y
-   dominio; actualizar `config.js`.
-4. **Badge de no leídos** y estado de entrega/lectura.
-5. **Editor de retos propios** por pareja.
-6. **Borrar historial/fotos** desde la app.
-7. **Publicación en Play Store** (AAB, ficha, políticas de privacidad).
+3. **Badge de no leídos** y estado de entrega/lectura.
+4. **Editor de retos propios** por pareja.
+5. **Borrar historial/fotos** desde la app.
+6. **Publicación en Play Store** (AAB, firma de release, políticas de privacidad).
 
 ---
 
@@ -316,5 +333,7 @@ Tablas: `users` (con `pub_key`), `couples`, `couple_members`, `messages`
 - App pensada para **adultos** en una relación consentida.
 - Guardar/reenviar imágenes íntimas de terceros sin consentimiento es ilegal en
   muchos países; la app está diseñada para uso **privado entre dos personas**.
-- El servidor no puede leer los textos (E2E), pero **sí almacena las fotos** hasta
-  que se implemente su cifrado.
+- El servidor **no puede leer** textos ni fotos: todo llega cifrado (E2E). Solo
+  guarda el ciphertext; la clave privada nunca sale de cada dispositivo.
+- Cada dispositivo conserva su **copia local** del historial y de las fotos
+  descifradas.

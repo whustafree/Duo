@@ -1,4 +1,4 @@
-import { customAlphabet } from "nanoid";
+import { customAlphabet, nanoid } from "nanoid";
 import db from "./db.js";
 
 const nano = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 5);
@@ -39,14 +39,16 @@ export function createCouple({ name, emoji, pubKey } = {}) {
       .get(code);
     if (!exists) break;
   }
+  // Secreto de la pareja: da acceso a mensajes, fotos y sala de sockets.
+  const token = nanoid(32);
   coupleId = newId("c");
   db.prepare(
-    "INSERT INTO couples (id, code, created_at) VALUES (?, ?, ?)"
-  ).run(coupleId, code, Date.now());
+    "INSERT INTO couples (id, code, token, created_at) VALUES (?, ?, ?, ?)"
+  ).run(coupleId, code, token, Date.now());
   db.prepare(
     "INSERT INTO couple_members (couple_id, user_id, slot) VALUES (?, ?, 1)"
   ).run(coupleId, user.id);
-  return { user, coupleId, code };
+  return { user, coupleId, code, token };
 }
 
 export function normalizeCode(code) {
@@ -73,7 +75,22 @@ export function joinCouple({ code, name, emoji, pubKey } = {}) {
   db.prepare(
     "INSERT INTO couple_members (couple_id, user_id, slot) VALUES (?, ?, 2)"
   ).run(couple.id, user.id);
-  return { user, coupleId: couple.id, code: couple.code };
+  return { user, coupleId: couple.id, code: couple.code, token: couple.token };
+}
+
+// Verifica que el userId sea miembro de la pareja Y que conozca el token secreto.
+export function isValidMember(coupleId, userId, token) {
+  if (!coupleId || !userId || !token) return false;
+  const couple = db
+    .prepare("SELECT token FROM couples WHERE id = ?")
+    .get(coupleId);
+  if (!couple?.token || couple.token !== token) return false;
+  const member = db
+    .prepare(
+      "SELECT 1 FROM couple_members WHERE couple_id = ? AND user_id = ?"
+    )
+    .get(coupleId, userId);
+  return !!member;
 }
 
 export function getCoupleInfo(coupleId, userId) {
@@ -97,26 +114,36 @@ export function getCoupleInfo(coupleId, userId) {
   return { couple, me, partner: partner || null, linked: count >= 2 };
 }
 
-export function addMessage({ coupleId, senderId, type, text, url, nonce }) {
+export function addMessage({
+  coupleId,
+  senderId,
+  type,
+  text,
+  ciphertext,
+  url,
+  nonce,
+}) {
   const msg = {
     id: newId("m"),
     couple_id: coupleId,
     sender_id: senderId,
     type: type || "text",
     text: text ?? null,
+    ciphertext: ciphertext ?? null,
     url: url ?? null,
     nonce: nonce ?? null,
     created_at: Date.now(),
   };
   db.prepare(
-    `INSERT INTO messages (id, couple_id, sender_id, type, text, url, nonce, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO messages (id, couple_id, sender_id, type, text, ciphertext, url, nonce, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     msg.id,
     msg.couple_id,
     msg.sender_id,
     msg.type,
     msg.text,
+    msg.ciphertext,
     msg.url,
     msg.nonce,
     msg.created_at

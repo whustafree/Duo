@@ -1,53 +1,52 @@
 import { API_URL } from "../config";
 
-async function request(path, options = {}) {
+// Todas las rutas privadas requieren el header `x-duo-token`: el secreto de la
+// pareja que se genera al vincularse. Sin él el servidor responde 401.
+async function request(path, { method = "GET", body, token } = {}) {
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers["x-duo-token"] = token;
   const res = await fetch(`${API_URL}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
   return data;
 }
 
-export function createPair({ name, emoji }) {
+export function createPair({ name, emoji, pubKey }) {
   return request("/api/pair/create", {
     method: "POST",
-    body: JSON.stringify({ name, emoji }),
+    body: { name, emoji, pubKey },
   });
 }
 
-export function joinPair({ code, name, emoji }) {
+export function joinPair({ code, name, emoji, pubKey }) {
   return request("/api/pair/join", {
     method: "POST",
-    body: JSON.stringify({ code, name, emoji }),
+    body: { code, name, emoji, pubKey },
   });
 }
 
-export function getCouple(coupleId, userId) {
-  return request(`/api/couple/${coupleId}?userId=${userId}`);
+export function getCouple(coupleId, userId, token) {
+  return request(`/api/couple/${coupleId}?userId=${userId}`, { token });
 }
 
-export function getMessages(coupleId) {
-  return request(`/api/messages/${coupleId}`);
+export function getMessages(coupleId, userId, token) {
+  return request(`/api/messages/${coupleId}?userId=${userId}`, { token });
 }
 
-export async function uploadPhoto({ coupleId, senderId, uri }) {
-  const form = new FormData();
-  form.append("coupleId", coupleId);
-  form.append("senderId", senderId);
-  const name = uri.split("/").pop() || "photo.jpg";
-  const ext = name.split(".").pop().toLowerCase();
-  const type = ext === "png" ? "image/png" : "image/jpeg";
-  form.append("photo", { uri, name, type });
-
-  const res = await fetch(`${API_URL}/api/upload`, { method: "POST", body: form });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "No se pudo subir la foto");
-  return data;
+// La foto viaja YA CIFRADA (AES-256-GCM hecho en el dispositivo).
+export function postPhoto({ coupleId, senderId, token, nonceB64, imageDataB64 }) {
+  return request("/api/photo", {
+    method: "POST",
+    token,
+    body: { coupleId, senderId, nonceB64, imageDataB64 },
+  });
 }
 
-export function photoUrl(url) {
+export function photoFileUrl(url) {
   if (!url) return null;
   return url.startsWith("http") ? url : `${API_URL}${url}`;
 }

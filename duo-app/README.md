@@ -2,8 +2,20 @@
 
 App privada para parejas: chat (texto + fotos), juegos y retos para acercarse.
 
-Incluye una **maqueta** (UI + datos simulados) y la **integración con el backend
-real** (`../duo-server`): vinculación por código, chat en tiempo real y fotos.
+Incluye la **integración con el backend** (`../duo-server`): vinculación por
+código, chat en tiempo real y fotos.
+
+## Privacidad (lo principal)
+
+- **Cifrado extremo a extremo (E2E)** de mensajes de texto *y* fotos:
+  X25519 + HKDF-SHA256 + AES-256-GCM. El servidor solo ve texto cifrado y
+  bytes ilegibles; la clave privada **nunca sale del dispositivo**.
+- **Solo ustedes dos**: cada pareja tiene un token secreto que valida el acceso
+  a mensajes, fotos y a la sala de sockets en tiempo real.
+- **Copia local en cada equipo**: el historial queda guardado en el dispositivo
+  (AsyncStorage) y las fotos se descifran y guardan en el almacenamiento local
+  de la app. Si el servidor desaparece, cada uno conserva su copia.
+
 
 ## Cómo funciona la conexión
 
@@ -99,11 +111,21 @@ Luego escanea el QR con **Expo Go** (Android/iOS) para verla en tu celular.
 4. ~~Fotos con `expo-image-picker` + servidor~~ ✅
 5. ~~Persistir sesión (AsyncStorage)~~ ✅
 6. ~~Notificaciones locales~~ ✅
-7. ~~Build APK con EAS~~ ✅ (`eas build -p android --profile preview`)
-8. **Cifrado extremo a extremo** (opcional, más privacidad).
+7. ~~Build APK~~ ✅ (GitHub Actions / EAS)
+8. ~~Cifrado extremo a extremo~~ ✅ (textos **y** fotos)
 9. **Push real en segundo plano** (development build + servicio de push).
+10. **HTTPS/WSS** al desplegar el backend en un servidor público.
 
-## Generar el APK (EAS)
+## Generar el APK
+
+### Opción A — GitHub Actions (sin cuenta Expo)
+
+El repo incluye `.github/workflows/build-apk.yml`. Con cada push a `main` que
+toque `duo-app/`, Actions compila el APK y lo deja en la pestaña **Actions →
+Build APK → artefacto `duo-apk`**. También se puede lanzar a mano desde la
+pestaña *Actions → Run workflow*.
+
+### Opción B — EAS (nube de Expo)
 
 Requiere una cuenta Expo (`npm i -g eas-cli && eas login`).
 

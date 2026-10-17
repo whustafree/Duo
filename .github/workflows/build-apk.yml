@@ -1,0 +1,62 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "duo-app/**"
+      - ".github/workflows/build-apk.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Compilar APK de Android
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      CI: "1"
+      EXPO_NO_TELEMETRY: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: duo-app/package-lock.json
+
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Instalar dependencias de la app
+        working-directory: duo-app
+        run: npm ci
+
+      - name: Generar proyecto nativo Android (expo prebuild)
+        working-directory: duo-app
+        run: npx expo prebuild -p android --no-install --yes
+
+      - name: Compilar APK (release)
+        working-directory: duo-app/android
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Empaquetar APK
+        working-directory: duo-app
+        run: |
+          APK=$(ls android/app/build/outputs/apk/release/*.apk | head -n 1)
+          VERSION=$(node -p "require('./app.json').expo.version")
+          cp "$APK" "duo-v${VERSION}-apk${GITHUB_RUN_NUMBER}.apk"
+          ls -lh duo-v*.apk
+
+      - name: Subir APK como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: duo-apk
+          path: duo-app/duo-v*.apk
+          if-no-files-found: error
+          retention-days: 90

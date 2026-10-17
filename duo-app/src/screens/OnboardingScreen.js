@@ -18,7 +18,7 @@ import { useE2E } from "../context/E2EContext";
 
 export default function OnboardingScreen({ navigation }) {
   const { save } = useSession();
-  const { keys } = useE2E();
+  const { keys, ready: keysReady } = useE2E();
   const [step, setStep] = useState("welcome"); // welcome | pair | join
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
@@ -28,10 +28,14 @@ export default function OnboardingScreen({ navigation }) {
 
   const doCreate = async () => {
     setError("");
+    if (!keys?.publicKeyB64) {
+      setError("Preparando claves de cifrado… intenta de nuevo en un momento.");
+      return;
+    }
     setLoading(true);
     try {
-      const data = await createPair({ name, pubKey: keys?.publicKeyB64 });
-      save(data);
+      const data = await createPair({ name, pubKey: keys.publicKeyB64 });
+      save({ ...data, partner: null, linked: false });
       setMyCode(data.code);
       setStep("pair");
     } catch (e) {
@@ -43,9 +47,13 @@ export default function OnboardingScreen({ navigation }) {
 
   const doJoin = async () => {
     setError("");
+    if (!keys?.publicKeyB64) {
+      setError("Preparando claves de cifrado… intenta de nuevo en un momento.");
+      return;
+    }
     setLoading(true);
     try {
-      const data = await joinPair({ code, name, pubKey: keys?.publicKeyB64 });
+      const data = await joinPair({ code, name, pubKey: keys.publicKeyB64 });
       save(data);
       navigation.replace("Main");
     } catch (e) {
@@ -81,7 +89,11 @@ export default function OnboardingScreen({ navigation }) {
           {NameField}
         </View>
         <View style={styles.actions}>
-          <PrimaryButton title="Crear vínculo" onPress={doCreate} loading={loading} />
+          <PrimaryButton
+            title="Crear vínculo"
+            onPress={doCreate}
+            loading={loading || !keysReady}
+          />
           <PrimaryButton
             title="Ya tengo un código"
             variant="ghost"
@@ -155,7 +167,7 @@ export default function OnboardingScreen({ navigation }) {
           <PrimaryButton
             title="Vincularnos"
             onPress={doJoin}
-            loading={loading}
+            loading={loading || !keysReady}
             style={{ marginTop: spacing.lg }}
           />
         </View>

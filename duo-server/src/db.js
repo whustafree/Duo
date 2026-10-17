@@ -24,6 +24,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS couples (
     id TEXT PRIMARY KEY,
     code TEXT UNIQUE NOT NULL,
+    token TEXT,
     created_at INTEGER NOT NULL
   );
 
@@ -42,6 +43,7 @@ db.exec(`
     sender_id TEXT NOT NULL,
     type TEXT NOT NULL DEFAULT 'text',
     text TEXT,
+    ciphertext TEXT,
     url TEXT,
     created_at INTEGER NOT NULL,
     nonce TEXT,
@@ -51,5 +53,17 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_messages_couple
     ON messages(couple_id, created_at);
 `);
+
+// Migración para bases creadas antes de existir token/ciphertext.
+for (const migration of [
+  "ALTER TABLE couples ADD COLUMN token TEXT",
+  "ALTER TABLE messages ADD COLUMN ciphertext TEXT",
+]) {
+  try {
+    db.exec(migration);
+  } catch {
+    // la columna ya existe: ignorar
+  }
+}
 
 export default db;
