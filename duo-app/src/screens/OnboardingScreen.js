@@ -15,6 +15,7 @@ import { colors, radius, spacing } from "../theme";
 import PrimaryButton from "../components/PrimaryButton";
 import { createPair, joinPair } from "../services/api";
 import { useE2E } from "../context/E2EContext";
+import { useSession } from "../context/SessionContext";
 
 export default function OnboardingScreen({ navigation }) {
   const { save } = useSession();
