@@ -2,150 +2,77 @@
 
 App privada para parejas: chat (texto + fotos), juegos y retos para acercarse.
 
-Incluye la **integración con el backend** (`../duo-server`): vinculación por
-código, chat en tiempo real y fotos.
+**No hay ningún servidor.** Los dos teléfonos se conectan **directamente entre
+sí** (misma WiFi) y todo lo que viaja va cifrado de extremo a extremo.
 
 ## Privacidad (lo principal)
 
-- **Cifrado extremo a extremo (E2E)** de mensajes de texto *y* fotos:
-  X25519 + HKDF-SHA256 + AES-256-GCM. El servidor solo ve texto cifrado y
-  bytes ilegibles; la clave privada **nunca sale del dispositivo**.
-- **Solo ustedes dos**: cada pareja tiene un token secreto que valida el acceso
-  a mensajes, fotos y a la sala de sockets en tiempo real.
+- **Sin backend**: los mensajes solo van del teléfono de uno al del otro.
+  Nada pasa por internet ni por terceros.
+- **Cifrado extremo a extremo (E2E)** de textos *y* fotos:
+  X25519 + HKDF-SHA256 + AES-256-GCM. Si alguien captura el tráfico de la WiFi
+  solo ve bytes ilegibles; la clave privada **nunca sale del dispositivo**.
 - **Copia local en cada equipo**: el historial queda guardado en el dispositivo
-  (AsyncStorage) y las fotos se descifran y guardan en el almacenamiento local
-  de la app. Si el servidor desaparece, cada uno conserva su copia.
-
+  (AsyncStorage) y las fotos se descifran y se guardan en el almacenamiento
+  local de la app. Cada uno conserva su propia copia.
+- **Código de verificación SAS** de 6 dígitos (idéntico en las dos pantallas)
+  al vincular, para asegurar que no te enlazaste con la persona equivocada.
 
 ## Cómo funciona la conexión
 
-La app lee la URL del servidor desde `src/config.js`:
+- Cada teléfono levanta un **servidor TCP propio** (puerto `47777`) y se
+  anuncia en la red local por **mDNS** (`_duo._tcp`).
+- El dispositivo con la clave pública "menor" marca la conexión saliente
+  (regla determinista: ambos calculan lo mismo, nunca se duplica el enlace).
+- Al conectar, se autentican mutuamente con E2E. Tras eso, todo va cifrado.
+- Si la pareja está desconectada, los mensajes quedan **pendientes aquí** y se
+  envían solos en cuanto los dos vuelven a estar en línea.
 
-```js
-export const API_URL = "http://TU_IP:4000";
-```
+> Requisito: ambos en la **misma red WiFi** y con la **app abierta**. Es el
+> precio de no depender de ningún servidor.
 
-- **Emulador Android**: `http://10.0.2.2:4000`
-- **Celular físico** (Expo Go): la IP LAN de la PC donde corre el server,
-  ej. `http://192.168.1.50:4000`
-- **Web / mismo equipo**: `http://localhost:4000`
+## Vinculación (una sola vez)
 
-Sin sesión (si no te vinculas), el chat muestra la **maqueta** con datos simulados.
+1. En el primer arranque, cada uno escribe su nombre.
+2. **Teléfono A**: toca *Crear vínculo* → aparece un **QR** con su clave
+   pública + IP + puerto + un secreto de un solo uso.
+3. **Teléfono B**: toca *Escanear el QR de mi pareja* → apunta la cámara.
+4. Ambas pantallas muestran el **mismo código de 6 dígitos**: si coincide,
+   A acepta la alerta y quedan vinculados. Las claves privadas nunca salen
+   de cada dispositivo.
 
-## Pantallas incluidas
-
-- **Onboarding / Vinculación** — crear vínculo con código `DUO-XXXXX` o unirse con uno.
-- **Chat** — burbujas de texto, mensajes con foto (placeholder), envío simulado.
-- **Juegos** — Verdad o Reto, Ruleta de Retos, Dados del Deseo, Para Conocernos.
-  - Niveles: 🌸 Suave · 💞 Romántico · 🌶️ Picante · 🔥 Atrevido.
-- **Nosotros** — perfil de la pareja, días juntos, ajustes.
-
-```
-duo-app/
-├── App.js                  # Navegación (stack + tabs) + SessionProvider
-├── index.js
-├── app.json
-├── babel.config.js
-├── package.json
-└── src/
-    ├── config.js           # URL del backend (¡edítala!)
-    ├── theme.js            # Colores, espaciados, tipografía
-    ├── data/mock.js        # Datos simulados (fallback sin sesión)
-    ├── context/
-    │   └── SessionContext.js   # userId / coupleId / código / partner
-    ├── services/
-    │   ├── api.js          # fetch al backend (pair, mensajes, upload)
-    │   ├── socket.js       # Socket.io (mensajes y typing en vivo)
-    │   └── notifications.js # Notificaciones locales
-    ├── components/
-    │   ├── Avatar.js
-    │   ├── PrimaryButton.js
-    │   └── ChallengeDeck.js
-    └── screens/
-        ├── OnboardingScreen.js   # Crear/unirse con código (API real)
-        ├── ChatScreen.js         # Historial + socket + fotos
-        ├── GamesScreen.js
-        ├── TruthDareScreen.js
-        ├── ChallengeScreen.js
-        ├── DiceScreen.js
-        ├── QuestionsScreen.js
-        └── ProfileScreen.js
-```
-
-## Cómo correrla
-
-**1. Levanta el backend** (en otra terminal):
+## Desarrollo
 
 ```bash
-cd ../duo-server
-npm start   # escucha en :4000
+npm install
+npm test           # 32 verificaciones del protocolo P2P (corren en Node)
+npx expo start     # solo para desarrollo con módulos JS
 ```
 
-**2. Ajusta `src/config.js`** con la IP correcta hacia el servidor.
+> `react-native-tcp-socket` y `react-native-zeroconf` son **módulos nativos**:
+> para probar la conexión real se necesita un development build o el APK
+> (Expo Go no los incluye).
 
-**3. Arranca la app:**
+### Generar el APK
 
-```bash
-cd duo-app
-npx expo install
-npx expo start
+- **GitHub Actions (recomendado)**: cada push a `main` que toque `duo-app/`
+  ejecuta `.github/workflows/build-apk.yml` → pruebas + APK como artefacto
+  (`duo-apk`) y en [Releases](https://github.com/whustafree/Duo/releases).
+- **EAS local**: `eas build -p android --profile preview`
+
+## Estructura relevante
+
+```
+src/services/
+  polyfills.js   # crypto.getRandomValues para Hermes (se carga primero)
+  cryptocore.js  # núcleo criptográfico puro (testeable en Node)
+  crypto.js      # guarda/carga el par de claves del dispositivo
+  protocol.js    # tramas, autenticación, emparejamiento, msgs, fotos
+  p2p.js         # transporte TCP directo + descubrimiento mDNS
+src/context/
+  P2PContext.js  # conexión + historial local + bandeja de salida + fotos
+test/
+  p2p-test.mjs   # pruebas (npm test)
 ```
 
-Luego escanea el QR con **Expo Go** (Android/iOS) para verla en tu celular.
-
-> En Termux el shebang de `npm`/`npx` puede estar roto; si falla usa:
-> `node "$(command -v npx)" expo start`
-
-## Flujo completo
-
-1. Usuario A abre la app → **Crear vínculo** → obtiene un código `DUO-XXXXX`.
-2. Usuario B abre la app → **Ya tengo un código** → lo ingresa.
-3. Quedan vinculados: chatean en tiempo real, ven "escribiendo…" y envían fotos.
-4. En **Juegos** practican retos por niveles.
-
-## Siguientes pasos
-
-1. ~~Backend Node + Socket.io~~ ✅
-2. ~~SQLite~~ ✅ (`node:sqlite`)
-3. ~~Vinculación por código~~ ✅
-4. ~~Fotos con `expo-image-picker` + servidor~~ ✅
-5. ~~Persistir sesión (AsyncStorage)~~ ✅
-6. ~~Notificaciones locales~~ ✅
-7. ~~Build APK~~ ✅ (GitHub Actions / EAS)
-8. ~~Cifrado extremo a extremo~~ ✅ (textos **y** fotos)
-9. **Push real en segundo plano** (development build + servicio de push).
-10. **HTTPS/WSS** al desplegar el backend en un servidor público.
-
-## Generar el APK
-
-### Opción A — GitHub Actions (sin cuenta Expo)
-
-El repo incluye `.github/workflows/build-apk.yml`. Con cada push a `main` que
-toque `duo-app/`, Actions compila el APK y lo deja en la pestaña **Actions →
-Build APK → artefacto `duo-apk`**. También se puede lanzar a mano desde la
-pestaña *Actions → Run workflow*.
-
-### Opción B — EAS (nube de Expo)
-
-Requiere una cuenta Expo (`npm i -g eas-cli && eas login`).
-
-```bash
-cd duo-app
-eas build -p android --profile preview   # genera un APK instalable
-```
-
-- `preview` → **APK** con `distribution: internal` (para instalar y probar).
-- `production` → **AAB** (para Play Store), con incremento automático de versión.
-
-El `eas.json` ya viene configurado. El paquete Android es `com.duo.app`
-(cámbialo en `app.json` si publicas).
-
-## Notas
-
-- Los retos están pensados para **parejas adultas y consentidas**. La app no
-  incluye contenido explícito; el nivel "Atrevido" es una invitación, no contenido
-  gráfico.
-- Sin sesión vinculada, la app corre en modo maqueta con datos simulados.
-- Las notificaciones son **locales** (al recibir un mensaje con la app en segundo
-  plano). Para push en segundo plano real con la app cerrada se necesita un
-  *development build* con `expo-notifications` + servidor de push.
+Repo: https://github.com/whustafree/Duo

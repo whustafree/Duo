@@ -38,22 +38,13 @@ export function SessionProvider({ children }) {
     persist(data);
   }, []);
 
-  const setPartner = useCallback((partner) => {
-    setSession((s) => {
-      if (!s) return s;
-      const next = { ...s, partner, linked: true };
-      persist(next);
-      return next;
-    });
-  }, []);
-
   const clear = useCallback(() => {
     setSession(null);
     persist(null);
   }, []);
 
   return (
-    <SessionContext.Provider value={{ session, ready, save, setPartner, clear }}>
+    <SessionContext.Provider value={{ session, ready, save, clear }}>
       {children}
     </SessionContext.Provider>
   );

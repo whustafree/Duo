@@ -37,6 +37,10 @@ jobs:
         working-directory: duo-app
         run: npm ci
 
+      - name: Pruebas del protocolo P2P
+        working-directory: duo-app
+        run: npm test
+
       - name: Generar proyecto nativo Android (expo prebuild)
         working-directory: duo-app
         run: npx expo prebuild -p android --no-install

@@ -20,8 +20,7 @@ export function E2EProvider({ children }) {
 
   useEffect(() => {
     if (!session) return;
-    const peer = session.partner?.pub_key;
-    setPeerPub(peer || null);
+    setPeerPub(session.partnerPub || null);
   }, [session]);
 
   const setPeerPubKey = useCallback((pk) => setPeerPub(pk), []);

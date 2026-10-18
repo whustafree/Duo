@@ -9,6 +9,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { colors } from "./src/theme";
 import { SessionProvider, useSession } from "./src/context/SessionContext";
 import { E2EProvider } from "./src/context/E2EContext";
+import { P2PProvider } from "./src/context/P2PContext";
 import OnboardingScreen from "./src/screens/OnboardingScreen";
 import ChatScreen from "./src/screens/ChatScreen";
 import GamesScreen from "./src/screens/GamesScreen";
@@ -135,7 +136,9 @@ export default function App() {
     <SafeAreaProvider>
       <SessionProvider>
         <E2EProvider>
-          <Root />
+          <P2PProvider>
+            <Root />
+          </P2PProvider>
         </E2EProvider>
       </SessionProvider>
     </SafeAreaProvider>

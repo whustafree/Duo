@@ -2,11 +2,11 @@
   "expo": {
     "name": "Duo",
     "slug": "duo-app",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "orientation": "portrait",
     "scheme": "duoapp",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "splash": {
       "resizeMode": "contain",
       "backgroundColor": "#0E0B14"
@@ -14,14 +14,22 @@
     "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.duo.app"
+      "bundleIdentifier": "com.duo.app",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription":
+          "Duo usa la red local para conectar directamente tu teléfono con el de tu pareja, sin servidores.",
+        "NSBonjourServices": ["_duo._tcp"]
+      }
     },
     "android": {
       "package": "com.duo.app",
-      "versionCode": 1,
+      "versionCode": 2,
       "permissions": [
         "android.permission.CAMERA",
-        "android.permission.READ_MEDIA_IMAGES"
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.ACCESS_WIFI_STATE",
+        "android.permission.CHANGE_WIFI_MULTICAST_STATE"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#0E0B14"
@@ -31,7 +39,13 @@
       "bundler": "metro"
     },
     "plugins": [
-      "./plugins/withCleartextTraffic",
+      [
+        "expo-camera",
+        {
+          "cameraPermission":
+            "Duo usa la cámara para escanear el código QR de tu pareja y vincularse de forma privada."
+        }
+      ],
       "expo-image-picker",
       [
         "expo-notifications",

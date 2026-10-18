@@ -9,42 +9,21 @@ import {
   KeyboardAvoidingView,
   Platform,
   Image,
-  ActivityIndicator,
   Alert,
-  AppState,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
-import * as FileSystem from "expo-file-system";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as ImageManipulator from "expo-image-manipulator";
 import { colors, radius, spacing } from "../theme";
-import { mockMessages, mockPartner } from "../data/mock";
 import Avatar from "../components/Avatar";
 import { useSession } from "../context/SessionContext";
-import { getMessages, getCouple, postPhoto, photoFileUrl } from "../services/api";
-import {
-  connectSocket,
-  getSocket,
-  sendMessage,
-  sendTyping,
-  disconnectSocket,
-} from "../services/socket";
-import { useE2E } from "../context/E2EContext";
-import {
-  encryptText,
-  decryptText,
-  encryptBytes,
-  decryptBytes,
-  b64ToBytes,
-  bytesToB64,
-} from "../services/crypto";
-import {
-  configureNotifications,
-  requestNotificationPermission,
-  notifyNewMessage,
-} from "../services/notifications";
+import { useP2P } from "../context/P2PContext";
+
+// Chat P2P: los mensajes salen cifrados de este teléfono al otro, directamente.
+// Si la pareja está desconectada, el mensaje queda guardado aquí (pendiente) y
+// se envía solo en cuanto los dos vuelven a estar conectados.
 
 function timeOf(ts) {
   const d = ts ? new Date(ts) : new Date();
@@ -53,321 +32,66 @@ function timeOf(ts) {
   ).padStart(2, "0")}`;
 }
 
-function MessageBubble({ item, userId }) {
-  const mine = item.sender_id === userId;
+function MessageBubble({ item }) {
+  const mine = item.from === "me";
   return (
     <View style={[styles.row, mine ? styles.rowMe : styles.rowOther]}>
       <View style={[styles.bubble, mine ? styles.bubbleMe : styles.bubbleOther]}>
-        {item.type === "photo" ? (
-          item.localUri ? (
-            <Image source={{ uri: item.localUri }} style={styles.photo} />
-          ) : (
-            <View style={[styles.photo, styles.photoPending]}>
-              <ActivityIndicator color={colors.primary} />
-            </View>
-          )
+        {item.kind === "photo" ? (
+          <Image source={{ uri: item.uri }} style={styles.photo} />
         ) : (
           <Text style={[styles.msgText, mine && styles.msgTextMe]}>
-            {item.text || (mine ? "" : "🔒 Sin clave para descifrar")}
+            {item.text}
           </Text>
         )}
         <Text style={[styles.time, mine ? styles.timeMe : styles.timeOther]}>
-          {item.time || timeOf(item.created_at)}
+          {timeOf(item.ts)}
+          {item.pending ? " ⏳" : ""}
         </Text>
       </View>
     </View>
   );
 }
 
+const STATUS_TEXT = {
+  online: "en línea 💞",
+  connecting: "conectando…",
+  offline: "sin conexión",
+};
+
 export default function ChatScreen() {
-  const { session, setPartner } = useSession();
-  const { keys, peerPub } = useE2E();
-  const live = !!session?.coupleId && !!session?.token;
+  const { session } = useSession();
+  const { status, messages, typing, sendText, sendPhoto, sendTyping } = useP2P();
 
-  const [messages, setMessages] = useState(live ? [] : mockMessages);
   const [text, setText] = useState("");
-  const [loading, setLoading] = useState(live);
-  const [typing, setTyping] = useState(false);
-  const [partner, setPartnerLocal] = useState(session?.partner || mockPartner);
   const listRef = useRef(null);
-  const typingTimer = useRef(null);
-  const partnerNameRef = useRef(session?.partner?.name || mockPartner.name);
 
-  // Claves actuales accesibles desde callbacks estables (evita closures viejas).
-  const e2eRef = useRef({});
-  e2eRef.current = {
-    priv: keys?.privateKeyB64,
-    pub: session?.partner?.pub_key || peerPub,
-  };
-  // Filas "crudas" del servidor (con ciphertext) para re-descifrar y cachear.
-  const rawRef = useRef([]);
-  const photoBusyRef = useRef(new Set());
-
-  const partnerName = partner?.name || mockPartner.name;
-  const partnerEmoji = partner?.emoji || mockPartner.emoji;
-  partnerNameRef.current = partnerName;
-
-  const cacheKey = session?.coupleId ? `duo.msgs.${session.coupleId}` : null;
-
-  const decodeRow = useCallback((m, priv, pub) => {
-    if (m.type === "text" && m.ciphertext) {
-      return {
-        ...m,
-        text: decryptText(
-          { ciphertextB64: m.ciphertext, nonceB64: m.nonce },
-          priv,
-          pub
-        ),
-      };
-    }
-    return m;
-  }, []);
-
-  const persistCache = useCallback(
-    (rows) => {
-      if (!cacheKey) return;
-      AsyncStorage.setItem(cacheKey, JSON.stringify(rows.slice(-200))).catch(
-        () => {}
-      );
-    },
-    [cacheKey]
-  );
+  const partnerName = session?.partnerName || "Mi Amor";
+  const partnerEmoji = session?.partnerEmoji || "💞";
 
   const scrollDown = useCallback(() => {
     setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 50);
   }, []);
 
-  // Descarga la foto (cifrada) del servidor, la descifra y la guarda COPIA
-  // LOCAL en el dispositivo. Después solo se lee de ahí.
-  const decodePhoto = useCallback(
-    async (msg) => {
-      const { priv, pub } = e2eRef.current;
-      if (!msg.url || !priv || !pub) return;
-      if (photoBusyRef.current.has(msg.id)) return;
-      photoBusyRef.current.add(msg.id);
-      const dest = `${FileSystem.documentDirectory}duo_${msg.id}.jpg`;
-      try {
-        const info = await FileSystem.getInfoAsync(dest);
-        if (!info.exists) {
-          const tmp = await FileSystem.downloadAsync(
-            photoFileUrl(msg.url),
-            `${FileSystem.documentDirectory}tmp_${msg.id}.bin`
-          );
-          const cipherB64 = await FileSystem.readAsStringAsync(tmp.uri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          const plain = decryptBytes(cipherB64, msg.nonce, priv, pub);
-          await FileSystem.deleteAsync(tmp.uri, { idempotent: true });
-          if (!plain) return;
-          await FileSystem.writeAsStringAsync(dest, bytesToB64(plain), {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-        }
-        setMessages((prev) =>
-          prev.map((m) => (m.id === msg.id ? { ...m, localUri: dest } : m))
-        );
-      } catch (e) {
-        console.warn("No se pudo abrir la foto:", e.message);
-      } finally {
-        photoBusyRef.current.delete(msg.id);
-      }
-    },
-    []
-  );
-
   useEffect(() => {
-    if (!live) return;
-    configureNotifications();
-    requestNotificationPermission();
-  }, [live]);
-
-  // Carga: primero la caché local, luego el historial del servidor.
-  useEffect(() => {
-    if (!live) return;
-    let alive = true;
-
-    (async () => {
-      try {
-        const cached = cacheKey ? await AsyncStorage.getItem(cacheKey) : null;
-        if (alive && cached) {
-          const rows = JSON.parse(cached);
-          rawRef.current = rows;
-          setMessages(
-            rows.map((m) =>
-              decodeRow(m, e2eRef.current.priv, e2eRef.current.pub)
-            )
-          );
-        }
-
-        const [history, info] = await Promise.all([
-          getMessages(session.coupleId, session.userId, session.token),
-          getCouple(session.coupleId, session.userId, session.token).catch(
-            () => null
-          ),
-        ]);
-        if (!alive) return;
-        rawRef.current = history;
-        setMessages(
-          history.map((m) =>
-            decodeRow(m, e2eRef.current.priv, e2eRef.current.pub)
-          )
-        );
-        persistCache(history);
-        if (info?.partner) {
-          setPartner(info.partner);
-          setPartnerLocal(info.partner);
-        }
-      } catch (e) {
-        console.warn("No se pudo cargar el historial:", e.message);
-      } finally {
-        if (alive) setLoading(false);
-      }
-    })();
-
-    const socket = connectSocket({
-      coupleId: session.coupleId,
-      userId: session.userId,
-      token: session.token,
-    });
-
-    socket.on("message", (msg) => {
-      // Los mensajes propios ya entran de forma optimista: ignorar el eco.
-      if (msg.sender_id === session.userId) return;
-      const decrypted = decodeRow(
-        msg,
-        e2eRef.current.priv,
-        e2eRef.current.pub
-      );
-      setMessages((prev) => [...prev, decrypted]);
-      rawRef.current = [...rawRef.current, msg];
-      persistCache(rawRef.current);
-      scrollDown();
-      if (AppState.currentState !== "active") {
-        notifyNewMessage({
-          title: partnerNameRef.current || "Mi Amor 💞",
-          body:
-            msg.type === "photo"
-              ? "📷 Te envió una foto"
-              : decrypted.text || "💬 Nuevo mensaje",
-        });
-      }
-    });
-
-    socket.on("partner_joined", ({ partner: p }) => {
-      setPartner(p);
-      setPartnerLocal(p);
-    });
-
-    socket.on("typing", ({ isTyping }) => {
-      setTyping(isTyping);
-      clearTimeout(typingTimer.current);
-      if (isTyping) {
-        typingTimer.current = setTimeout(() => setTyping(false), 2500);
-      }
-    });
-
-    socket.on("auth_error", () => {
-      Alert.alert(
-        "Vínculo inválido",
-        "Tu sesión ya no tiene acceso a esta pareja. Ve a Perfil y elige «Desvincular» para volver a vincular."
-      );
-    });
-
-    return () => {
-      alive = false;
-      socket.off("message");
-      socket.off("partner_joined");
-      socket.off("typing");
-      socket.off("auth_error");
-      disconnectSocket();
-      clearTimeout(typingTimer.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [live, session?.coupleId, session?.userId]);
-
-  // Cuando llegan (o terminan de cargar) las claves, re-descifra el historial.
-  useEffect(() => {
-    if (!live || !rawRef.current.length) return;
-    const { priv, pub } = e2eRef.current;
-    setMessages(rawRef.current.map((m) => decodeRow(m, priv, pub)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [keys?.privateKeyB64, peerPub]);
-
-  // Asegura que cada foto tenga su copia local descifrada.
-  useEffect(() => {
-    if (!live) return;
-    messages.forEach((m) => {
-      if (m.type === "photo" && m.url && !m.localUri) decodePhoto(m);
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, live]);
+    scrollDown();
+  }, [messages.length, scrollDown]);
 
   const handleTyping = (value) => {
     setText(value);
-    if (live) sendTyping({ isTyping: !!value });
+    sendTyping(!!value);
   };
 
   const send = () => {
     const value = text.trim();
     if (!value) return;
     setText("");
-    if (live) {
-      const { priv, pub } = e2eRef.current;
-      if (!priv || !pub) {
-        Alert.alert(
-          "Aún no pueden cifrar",
-          "Espera a que tu pareja se una al vínculo (o vuelve a vincular desde Perfil)."
-        );
-        return;
-      }
-      const enc = encryptText(value, priv, pub);
-      if (enc.error) {
-        Alert.alert("No se pudo cifrar", enc.error);
-        return;
-      }
-      if (!getSocket()?.connected) {
-        Alert.alert("Sin conexión", "El mensaje no se pudo enviar.");
-        return;
-      }
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `local_${Date.now()}`,
-          sender_id: session.userId,
-          type: "text",
-          text: value,
-          created_at: Date.now(),
-        },
-      ]);
-      sendMessage({ ciphertextB64: enc.ciphertextB64, nonce: enc.nonceB64 });
-    } else {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: String(Date.now()),
-          from: "me",
-          type: "text",
-          text: value,
-          time: timeOf(),
-        },
-      ]);
-    }
+    sendText(value);
+    sendTyping(false);
     scrollDown();
   };
 
   const pickPhoto = async () => {
-    if (!live) {
-      Alert.alert("Modo maqueta", "Vincula una pareja para enviar fotos reales.");
-      return;
-    }
-    const { priv, pub } = e2eRef.current;
-    if (!priv || !pub) {
-      Alert.alert(
-        "Aún no pueden cifrar",
-        "Espera a que tu pareja se una al vínculo para enviar fotos."
-      );
-      return;
-    }
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) {
       Alert.alert("Permiso necesario", "Habilita el acceso a tus fotos.");
@@ -375,40 +99,22 @@ export default function ChatScreen() {
     }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.7,
+      quality: 1,
     });
     if (result.canceled) return;
-    const uri = result.assets[0].uri;
-
-    const localId = `local_${Date.now()}`;
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: localId,
-        sender_id: session.userId,
-        type: "photo",
-        localUri: uri,
-        created_at: Date.now(),
-      },
-    ]);
-    scrollDown();
+    const src = result.assets[0].uri;
     try {
-      // Cifrar ANTES de subir: el servidor solo recibe bytes ilegibles.
-      const b64 = await FileSystem.readAsStringAsync(uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-      const enc = encryptBytes(b64ToBytes(b64), priv, pub);
-      if (!enc) throw new Error("No se pudo cifrar la foto");
-      await postPhoto({
-        coupleId: session.coupleId,
-        senderId: session.userId,
-        token: session.token,
-        nonceB64: enc.nonceB64,
-        imageDataB64: enc.cipherB64,
-      });
+      // Reducir antes de enviar: viaja por la red local, pero así el teléfono
+      // viejo también lo procesa rápido (y se cifra igual).
+      const resized = await ImageManipulator.manipulateAsync(
+        src,
+        [{ resize: { width: 1280 } }],
+        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      await sendPhoto(resized.uri);
+      scrollDown();
     } catch (e) {
-      setMessages((prev) => prev.filter((m) => m.id !== localId));
-      Alert.alert("Error", e.message);
+      Alert.alert("No se pudo enviar la foto", e?.message || "");
     }
   };
 
@@ -418,13 +124,18 @@ export default function ChatScreen() {
       <View style={styles.header}>
         <Avatar
           emoji={partnerEmoji}
-          color={partner?.avatarColor || mockPartner.avatarColor}
-          online
+          color={session?.partnerAvatarColor || "#FF6B8B"}
+          online={status === "online"}
         />
         <View style={{ marginLeft: spacing.sm, flex: 1 }}>
           <Text style={styles.name}>{partnerName}</Text>
-          <Text style={styles.status}>
-            {typing ? "escribiendo…" : live ? "en línea" : "modo maqueta"}
+          <Text
+            style={[
+              styles.status,
+              status !== "online" && styles.statusOffline,
+            ]}
+          >
+            {typing ? "escribiendo…" : STATUS_TEXT[status] || STATUS_TEXT.offline}
           </Text>
         </View>
         <Pressable style={styles.iconBtn}>
@@ -432,28 +143,31 @@ export default function ChatScreen() {
         </Pressable>
       </View>
 
-      {loading ? (
-        <View style={styles.center}>
-          <ActivityIndicator color={colors.primary} />
-        </View>
-      ) : (
-        <FlatList
-          ref={listRef}
-          data={messages}
-          keyExtractor={(m) => m.id}
-          renderItem={({ item }) => (
-            <MessageBubble item={item} userId={session?.userId} />
-          )}
-          contentContainerStyle={{ padding: spacing.md, paddingBottom: spacing.lg }}
-          showsVerticalScrollIndicator={false}
-          onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
-          ListEmptyComponent={
+      <FlatList
+        ref={listRef}
+        data={messages}
+        keyExtractor={(m) => m.id}
+        renderItem={({ item }) => <MessageBubble item={item} />}
+        contentContainerStyle={{ padding: spacing.md, paddingBottom: spacing.lg }}
+        showsVerticalScrollIndicator={false}
+        onContentSizeChange={() =>
+          listRef.current?.scrollToEnd({ animated: false })
+        }
+        ListEmptyComponent={
+          <View style={styles.emptyBox}>
             <Text style={styles.empty}>
               Aún no hay mensajes. ¡Rompe el hielo! 💬
             </Text>
-          }
-        />
-      )}
+            {status !== "online" ? (
+              <Text style={styles.emptyHint}>
+                {status === "connecting"
+                  ? "Buscando a tu pareja… se enviará todo en cuanto esté en línea."
+                  : "Tus mensajes se enviarán solos cuando tu pareja abra la app en la misma WiFi."}
+              </Text>
+            ) : null}
+          </View>
+        }
+      />
 
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -485,8 +199,16 @@ export default function ChatScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
-  center: { flex: 1, alignItems: "center", justifyContent: "center" },
-  empty: { color: colors.muted, textAlign: "center", marginTop: spacing.xl },
+  emptyBox: { marginTop: spacing.xl },
+  empty: { color: colors.muted, textAlign: "center" },
+  emptyHint: {
+    color: colors.muted,
+    textAlign: "center",
+    marginTop: spacing.sm,
+    fontSize: 12,
+    lineHeight: 18,
+    paddingHorizontal: spacing.lg,
+  },
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -497,6 +219,7 @@ const styles = StyleSheet.create({
   },
   name: { color: colors.text, fontSize: 17, fontWeight: "700" },
   status: { color: colors.success, fontSize: 12, marginTop: 1 },
+  statusOffline: { color: colors.muted },
   iconBtn: { padding: spacing.sm },
   row: { marginBottom: spacing.sm, flexDirection: "row" },
   rowMe: { justifyContent: "flex-end" },
@@ -520,7 +243,6 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     backgroundColor: colors.surfaceAlt,
   },
-  photoPending: { alignItems: "center", justifyContent: "center" },
   inputBar: {
     flexDirection: "row",
     alignItems: "flex-end",

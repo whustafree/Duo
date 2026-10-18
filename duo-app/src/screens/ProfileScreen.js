@@ -4,8 +4,9 @@ import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing } from "../theme";
 import Avatar from "../components/Avatar";
-import { mockUser, mockPartner, coupleMeta } from "../data/mock";
 import { useSession } from "../context/SessionContext";
+import { useE2E } from "../context/E2EContext";
+import { verificationCode } from "../services/cryptocore";
 
 function Stat({ value, label }) {
   return (
@@ -29,15 +30,20 @@ function Row({ icon, label, value }) {
 
 export default function ProfileScreen({ navigation }) {
   const { session, clear } = useSession();
-  const me = session?.user
-    ? { emoji: session.user.emoji || "🦊", avatarColor: mockUser.avatarColor }
-    : mockUser;
-  const partner = session?.partner
-    ? { emoji: session.partner.emoji || "🐰", avatarColor: mockPartner.avatarColor }
-    : mockPartner;
-  const partnerName = session?.partner?.name || mockPartner.name;
-  const code = session?.code || coupleMeta.code;
-  const linked = session?.linked ?? true;
+  const { keys } = useE2E();
+  const me = { emoji: session?.myEmoji || "🦊", avatarColor: "#FF6B8B" };
+  const partner = {
+    emoji: session?.partnerEmoji || "🐰",
+    avatarColor: "#7C6BFF",
+  };
+  const partnerName = session?.partnerName || "tu pareja";
+  const linked = !!session?.linked;
+  // Mismo código en los dos teléfonos: confirmación visual de que son la pareja
+  // correcta (SAS derivado de las claves públicas de ambos).
+  const code =
+    linked && keys?.publicKeyB64 && session?.partnerPub
+      ? verificationCode(keys.publicKeyB64, session.partnerPub)
+      : "—";
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -56,7 +62,9 @@ export default function ProfileScreen({ navigation }) {
           </View>
           <Text style={styles.names}>Tú & {partnerName}</Text>
           <Text style={styles.since}>
-            {linked ? "Vinculados 💞" : "Esperando a tu pareja… comparte el código"}
+            {linked
+              ? "Vinculados 💞"
+              : "Esperando a tu pareja… crea un vínculo con su QR"}
           </Text>
         </View>
 
@@ -68,9 +76,9 @@ export default function ProfileScreen({ navigation }) {
 
         <Text style={styles.section}>Nuestro vínculo</Text>
         <View style={styles.card}>
-          <Row icon="key" label="Código de pareja" value={code} />
+          <Row icon="key" label="Código de verificación" value={code} />
           <Row icon="lock-closed" label="Privacidad" value="Solo ustedes" />
-          <Row icon="notifications" label="Notificaciones" value="Activadas" />
+          <Row icon="swap-horizontal" label="Conexión" value="Directa P2P" />
         </View>
 
         <Text style={styles.section}>Apariencia y datos</Text>

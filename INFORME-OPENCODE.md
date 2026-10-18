@@ -6,334 +6,241 @@
 > Este archivo está pensado para que un agente de opencode (u otro dev) retome el
 > trabajo sin contexto previo.
 
-Última actualización: 17 de octubre de 2026
+Última actualización: 18 de octubre de 2026
 
 ---
 
 ## 0) Resumen ejecutivo
 
 **Duo** es una app privada para parejas (solo 2 personas vinculadas) que incluye
-chat en tiempo real, envío de fotos, juegos/retos por niveles y cifrado extremo a
-extremo (E2E) de los mensajes de texto.
+chat directo entre los dos teléfonos, envío de fotos, juegos/retos por niveles y
+cifrado extremo a extremo (E2E) de textos y fotos.
 
-Está compuesta por dos proyectos:
+**Arquitectura 100% P2P: no existe servidor.** El backend histórico
+(`duo-server/`: Express + Socket.io + SQLite) fue **eliminado**. Los dos
+teléfonos se conectan directamente entre sí en la red local (TCP + mDNS) y todo
+lo que viaja va cifrado con E2E encima del transporte.
 
 | Carpeta | Stack | Rol |
 | ------- | ----- | --- |
 | `duo-app/` | React Native + Expo (SDK 52) | App móvil (Android/iOS) |
-| `duo-server/` | Node.js + Express + Socket.io + SQLite (`node:sqlite`) | Backend |
 
-El trabajo se hizo desde **Termux (Android)**, donde el toolchain de Expo es
-frágil. En un **PC estándar (Windows/Linux/macOS)** todo funciona de forma normal.
-Este informe prioriza las instrucciones para PC.
-
----
-
-## 1. Qué estamos haciendo (objetivo)
-
-App privada de pareja con:
-
-1. **Vinculación por código** `DUO-XXXXX` (solo se unen 2 personas).
-2. **Chat en tiempo real** (texto) por sala privada.
-3. **Envío de fotos**.
-4. **Juegos/retos** por niveles: 🌸 Suave · 💞 Romántico · 🌶️ Picante · 🔥 Atrevido.
-5. **Cifrado E2E** de mensajes de texto (X25519 + AES-256-GCM).
-6. **Persistencia de sesión** (no revincular cada vez).
-7. **Notificaciones locales** al recibir mensajes en segundo plano.
-
-> Los retos son para **adultos consentidos**. No hay contenido explícito; el nivel
-> "Atrevido" es una invitación, no contenido gráfico.
+> Nota histórica: el trabajo original se hizo desde Termux (Android), donde el
+> toolchain de Expo es frágil. En un **PC estándar (Windows/Linux/macOS)**
+> todo funciona de forma normal. Este informe prioriza las instrucciones para PC.
 
 ---
 
-## 2. Estado actual (checklist)
+## 1) Estado actual
 
-- [x] Maqueta completa de UI (todas las pantallas).
-- [x] Backend Node + Express + Socket.io.
-- [x] Base de datos SQLite con `node:sqlite` (sin dependencias nativas).
-- [x] Vinculación por código (máx. 2 por pareja) + **token secreto por pareja**.
-- [x] Chat en tiempo real + "escribiendo…".
-- [x] Fotos cifradas en el cliente; el servidor solo guarda bytes ilegibles.
-- [x] Persistencia de sesión + **historial cacheado en cada dispositivo**.
-- [x] Notificaciones locales (expo-notifications).
-- [x] Cifrado E2E de textos **y fotos** (noble-curves/ciphers/hashes).
-- [x] Autorización en REST y sockets (token + membresía; sin inyección).
-- [x] Test automático del backend (15 verificaciones).
-- [x] Repo público en GitHub: https://github.com/whustafree/Duo
-- [x] Build de APK por GitHub Actions (`.github/workflows/build-apk.yml`).
-- [ ] Push real en background, HTTPS en producción, Play Store.
+### Hecho
+
+- [x] Maqueta completa de UI (todas las pantallas, tema oscuro).
+- [x] **Servidor eliminado**: chat/fotos/vinculación P2P directa entre teléfonos.
+- [x] Vinculación por **QR** (`react-native-qrcode-svg` + `expo-camera`) con
+      secreto de un solo uso y confirmación mediante **código SAS de 6 dígitos**.
+- [x] Transporte: **TCP directo** (puerto 47777) + descubrimiento **mDNS**
+      (`react-native-zeroconf`, servicio `_duo._tcp`) + reconexión con la
+      dirección IP guardada por pareja.
+- [x] Regla determinista de conexión: el dispositivo con la clave pública
+      "menor" marca la conexión (evita sockets duplicados A↔B).
+- [x] Autenticación E2E del enlace + heartbeat ping/pong (20 s / corte a 60 s).
+- [x] Chat en tiempo real + "escribiendo…" + acks, deduplicación y **bandeja de
+      salida** (lo no entregado se envía solo al reconectar).
+- [x] Fotos cifradas en origen, troceadas en base64 y reensambladas al recibir.
+- [x] Persistencia de sesión + historial local cifrado en AsyncStorage (300
+      últimos mensajes) + fotos descifradas en almacenamiento local.
+- [x] Notificaciones locales en segundo plano.
+- [x] Cifrado E2E: X25519 + HKDF-SHA256 + AES-256-GCM, módulos `@noble/*`.
+- [x] Polyfill `crypto.getRandomValues` con RNG nativo (`expo-crypto`), cargado
+      **antes** que cualquier otro módulo (`index.js`).
+- [x] Pruebas del protocolo: `duo-app/test/p2p-test.mjs` → **`npm test`**,
+      32 verificaciones (incluida una sesión TCP real sobre 127.0.0.1).
+- [x] `expo-doctor` 17/18 (la única nota es metadata de libs solo-JS, excluida
+      en `package.json`), bundle de Metro `expo export` verde.
+- [x] APK por GitHub Actions en cada push a `main` que toque `duo-app/**`
+      (pruebas + `expo prebuild` + `gradlew assembleRelease`).
+- [x] Releases publicados: **v0.1.2** (versión con servidor) y
+      **v0.2.0** (primera versión P2P, app 0.2.0 / versionCode 2).
+
+### Pendiente
+
+- [ ] Probar en **dos celulares reales** el flujo completo: crear vínculo por
+      QR, mensajes entrantes/salientes, fotos, reconexión tras cerrar la app.
+- [ ] Chat entre redes distintas (requeriría STUN/TURN o relay: decisión de
+      diseño pendiente; hoy es solo LAN).
+- [ ] Más juegos/retos, borrar historial desde la app, publicar en Play Store.
 
 ---
 
-## 2.bis Estado de verificación
+## 2) Cómo funciona la conexión P2P (detalle)
 
-| Componente | Estado | Cómo se verificó |
-| ---------- | ------ | ---------------- |
-| Backend (REST + sockets + auth) | ✅ Probado | `npm test` en `duo-server`: 15/15 (token, 401 sin token, ciphertext, anti-inyección, fotos) |
-| Criptografía del cliente | ✅ Probada | Round-trip A↔B con claves reales: base64, UTF-8, texto y fotos; un tercero con otra clave no descifra |
-| Sintaxis de la app | ✅ Validada | Parser Babel (22 archivos JS, 0 errores) |
-| Build de APK | ✅ Automatizado | GitHub Actions: `expo prebuild` + `gradlew assembleRelease` → artefacto `duo-apk` |
+### Archivos clave
 
----
+| Archivo | Rol |
+| ------- | --- |
+| `duo-app/index.js` | Importa `src/services/polyfills.js` **primero** (RNG para Hermes). |
+| `duo-app/src/services/cryptocore.js` | Núcleo criptográfico **puro** (sin React Native): claves, cifrado, `deriveCoupleId`, código SAS, emoji por clave, secreto del QR. Testeable en Node. |
+| `duo-app/src/services/protocol.js` | **Puro**: encuadre de tramas (prefijo de 4 bytes + JSON, máx. 8 MB), `auth`/`pair-req`/`pair-ok`/`msg`/`ack`/`ping`/`typing`, troceo de fotos (48000 chars). |
+| `duo-app/src/services/p2p.js` | Transporte nativo: `react-native-tcp-socket` (servidor/puerto 47777 + dialer) y `react-native-zeroconf` (publica/escanea `_duo._tcp`). Regla de roles, handshake, heartbeat, pareo, candidatos mDNS, dirección guardada. |
+| `duo-app/src/services/crypto.js` | Wrapper de almacenamiento: guarda/carga el par de claves en AsyncStorage y re-exporta `cryptocore`. |
+| `duo-app/src/context/P2PContext.js` | Capa React: historial local (`duo.msgs.<coupleId>`), bandeja de salida, envío/recepción de fotos, acks/dedup, typing, notificaciones en 2.º plano, API de pareo, dirección guardada por pareja (`duo.partner.addr.<coupleId>`), despertar con AppState. |
+| `duo-app/src/context/E2EContext.js` | Expone las claves del dispositivo; `peerPub` = `session.partnerPub`. |
+| `duo-app/src/screens/OnboardingScreen.js` | Flujo de vínculo QR: bienvenida → crear (muestra QR y espera) / escanear (CameraView) → verificación SAS → guarda sesión → Main. |
+| `duo-app/src/screens/ChatScreen.js` | Chat sobre `useP2P()` (sin api/socket). Fotos con `expo-image-manipulator` (1280 px, JPEG 0.7) antes de cifrar. |
+| `duo-app/test/p2p-test.mjs` | Pruebas: copia `cryptocore.js`/`protocol.js` a temporales `.mjs` y los importa en Node (misma técnica que usaba `duo-server/test/e2e-test.mjs`). |
 
-## 3. Estructura del proyecto
+### Flujo de vínculo (QR)
 
 ```
-DuoProyecto/
-├── MANIFIESTO.md            # Resumen (este informe es la versión extendida)
-├── INFORME-OPENCODE.md      # Este documento
-├── duo-proyecto.tar.gz      # Todo comprimido (sin node_modules)
-├── duo-app/                 # App móvil (Expo)
-│   ├── App.js
-│   ├── index.js
-│   ├── app.json
-│   ├── eas.json
-│   ├── babel.config.js
-│   ├── package.json
-│   └── src/
-│       ├── config.js        # ⚠️ URL del backend (AJUSTAR)
-│       ├── theme.js
-│       ├── data/mock.js
-│       ├── context/{SessionContext,E2EContext}.js
-│       ├── services/{api,socket,crypto,notifications}.js
-│       ├── components/{Avatar,PrimaryButton,ChallengeDeck}.js
-│       └── screens/*.js
-└── duo-server/              # Backend (Node)
-    ├── src/{index,db,store}.js
-    ├── test/socket-test.js
-    ├── uploads/
-    └── package.json
+QR de A:  duo:pair:v1:<pubA b64url>:<host|->:<port>:<ps b64url>
 ```
+
+1. A llama `startPairing()` → levanta servidor + mDNS, devuelve el QR.
+2. B escanea → `joinPairing()` → marca (regla: quien se une **marca**) →
+   envía `pair-req` cifrado con `HKDF(ps)` por el socket TCP (IP del QR; si
+   falla, candidatos mDNS).
+3. A recibe → Alert con nombre + código SAS → acepta/rechaza.
+4. A responde `pair-ok` con su nombre/emoji/coupleId → ambos guardan sesión
+   (clave `duo.session`) y entran a Main. Cada lado guarda
+   `myEmoji = emojiForPub(mía)` y `partnerEmoji = emojiForPub(de la pareja)`.
+
+### Cifrado de mensajes
+
+- Mensaje: `encryptText(text, miPriv, pubPareja)` dentro de la trama `msg`.
+- Foto: archivo → copia temporal → `encryptBytes` → `splitPhoto` (chunks de
+  48000 chars) → tramas `photo-meta` + `photo-chunk[i]` → al completar,
+  `PhotoAssembler` devuelve meta → descifra → escribe `duo_<id>.jpg` local.
+- coupleId: `duo-` + hex(sha256(`duo-couple-v1|pubA|pubB` ordenadas)) →
+  idéntico en ambos lados, se deriva localmente (nunca viaja).
+
+### Desconexión / bandeja
+
+- `sendText`/`sendPhoto` persisten la fila (`pending: true`) en el historial
+  y en la **bandeja** (`duo.outbox`); al aparecer sesión se reenvían todo
+  (foto → `photo-pending` en disco hasta poder rearmarse).
+- Heartbeat `ping` cada 20 s; sin `pong` en 60 s se corta y corre el bucle de
+  reconexión cada 8 s: dirección guardada → candidatos mDNS.
 
 ---
 
-## 4. Requisitos del PC
+## 3) Paso a paso en PC (Windows/Linux/macOS)
 
-- **Node.js 20 LTS o superior** (recomendado 22+; el backend usa `node:sqlite`,
-  disponible desde Node 22.5+ sin flags).
-- **npm** (viene con Node).
-- **Git** (opcional).
-- **Expo Go** en el celular (para probar sin compilar).
-- Para APK:
-  - **Cuenta gratuita en expo.dev**.
-  - `npm install -g eas-cli`.
-  - (Alternativa sin EAS) Android Studio + JDK 17 para build local.
+### Requisitos
 
-> ⚠️ El backend **no** funciona en Node < 22.5 porque `node:sqlite` no existe.
+- Node.js 20+ (probado con 24) y npm.
+- Git.
+- Para APK: **NO hace falta Java/Android SDK local**: lo hace GitHub Actions.
+  (Si se quiere local: JDK 17 + Android Studio + `ANDROID_HOME`.)
 
----
-
-## 5. Correr TODO desde el PC
-
-### 5.1 Backend
-
-```bash
-cd duo-server
-npm install
-npm start          # arranca en http://localhost:4000
-# prueba rápida:
-curl http://localhost:4000/health        # {"ok":true}
-npm test           # test de sockets (en otra terminal, con el server corriendo)
-```
-
-Variables de entorno opcionales:
-
-```bash
-PORT=4000 npm start
-```
-
-### 5.2 Frontend (modo desarrollo con Expo Go)
+### Correr en desarrollo
 
 ```bash
 cd duo-app
 npm install
+npm test              # 32 verificaciones del protocolo P2P
 npx expo start
 ```
 
-Luego escanea el QR con la app **Expo Go** en el celular (misma red WiFi).
+> Importante: `react-native-tcp-socket` y `react-native-zeroconf` son módulos
+> nativos que **Expo Go no incluye**. Para probar la conexión P2P real se
+> necesita un development build (`npx expo run:android`) o el APK.
 
-> Si el celular y el PC no están en la misma red, usa túnel:
-> `npx expo start --tunnel` (instalará `@expo/ngrok`).
+### Generar el APK (recomendado: GitHub Actions)
 
-### 5.3 ⚠️ Configurar la URL del backend
+1. Push a `main` que toque `duo-app/**` (o pestaña *Actions → Build APK →
+   Run workflow*).
+2. El workflow (`.github/workflows/build-apk.yml`):
+   `npm ci` → **`npm test`** → `npx expo prebuild -p android --no-install` →
+   `gradlew assembleRelease` → artefacto `duo-apk`
+   (`duo-v<versión>-apk<n>.apk`).
+3. Descargar el artefacto y publicarlo como Release en
+   https://github.com/whustafree/Duo/releases (tag `vX.Y.Z` = `expo.version`).
 
-Editar `duo-app/src/config.js`:
-
-```js
-export const API_URL = "http://IP_DEL_PC:4000";
-export const SOCKET_URL = API_URL;
-```
-
-- **Emulador Android**: `http://10.0.2.2:4000`
-- **Celular físico (Expo Go)**: la **IP LAN del PC**, ej. `http://192.168.1.50:4000`
-  (averíguala con `ipconfig` en Windows o `ip addr` en Linux/Mac).
-- **Web / mismo equipo**: `http://localhost:4000`
-
-El firewall del PC debe permitir el puerto **4000** (y **8081** para Metro).
-
----
-
-## 6. Generar la APK
-
-### Opción A — GitHub Actions (recomendada, sin cuenta Expo)
-
-El repo tiene `.github/workflows/build-apk.yml`: con cada push a `main` que toque
-`duo-app/` (o manualmente desde *Actions → Run workflow*), Actions compila el
-APK en la nube y lo deja en **Actions → Build APK → artefacto `duo-apk`**
-(descargable desde ahí, retención de 90 días).
-
-### Opción B — EAS Build (nube de Expo)
+### Generar el APK (alternativa: EAS)
 
 ```bash
 cd duo-app
-npm install -g eas-cli
-eas login                      # crea/inicia sesión en expo.dev
-eas build:configure            # solo la primera vez (ya hay eas.json)
-eas build -p android --profile preview
+npx eas login
+npx eas build -p android --profile preview
 ```
 
-- `preview` → **APK** instalable (distribución interna).
-- `production` → **AAB** para Google Play, con autoincremento de versión.
+`eas.json` ya tiene el perfil `preview` (APK, sin credenciales).
 
-Al terminar, EAS da un enlace para descargar la APK. Se instala en el Android
-activando "Fuentes desconocidas".
+---
 
-`eas.json` ya está configurado:
+## 4) Decisiones de diseño (por qué es así)
 
-```json
-{
-  "build": {
-    "preview":    { "distribution": "internal", "android": { "buildType": "apk" } },
-    "production": { "autoIncrement": true, "android": { "buildType": "app-bundle" } }
-  }
-}
-```
+- **TCP + mDNS en vez de WebRTC**: las parejas están en la misma WiFi de casa
+  (como el antiguo setup con servidor en la PC). Así hay reconexión automática
+  sin repetir un intercambio QR en cada sesión. Contrapartida aceptada: los dos
+  deben estar en la misma WiFi con la app abierta para intercambiar; lo no
+  entregado queda encolado localmente.
+- **Regla determinista de roles** (clave pública menor = dialer; quien crea el
+  vínculo escucha, quien se une marca): evita sockets duplicados A↔B y
+  condiciones de carrera en el descubrimiento.
+- **E2E encima del transporte**: el cifrado no depende de que la red sea
+  confiable; el handshake de autenticación exige la clave privada correcta.
+- **`newArchEnabled: false`** en `app.json`: `tcp-socket`/`zeroconf` son
+  módulos de puente clásico; con la arquitectura nueva solo hay notas
+  "untested on New Architecture" en doctor y se evitan riesgos.
+- **Todo puro separado** (`cryptocore.js`/`protocol.js` sin imports de
+  React Native): permite probar la lógica criptográfica y de tramas en Node
+  puro, sin emulator ni build.
 
-### Opción C — Build local (requiere Android SDK + JDK 17)
+---
+
+## 5) Lecciones aprendidas (no repetir)
+
+1. **Pantalla blanca = excepción JS en release** (no hay redbox). El fondo de
+   arranque es `#0E0B14`. Detectores útiles:
+   `check-imports.cjs` / `check-idents.cjs` en el temp de opencode (imports
+   faltantes / hooks declarados pero sin usar).
+2. **Hermes no trae Web Crypto**: `crypto.getRandomValues` debe instalarse en
+   `polyfills.js` **antes** de cualquier uso de `@noble/*` (se importa primero
+   en `index.js`).
+3. **Autolinking de Expo solo escanea un nivel**: `*/expo-module.config.json`
+   bajo `node_modules`. Todas las deps nativas deben quedar **planas**
+   (verificar con `npm ls` y que no haya `node_modules` anidados con módulos
+   nativos).
+4. **Versiones nativas = las de `expo/bundledNativeModules.json`** del SDK:
+   instalar con `npx expo install <pkg>` para que respete SDK 52.
+5. **`@babel/register` debe ser 7.x** (Babel 8 rompe el setup de pruebas).
+6. **`process.exit()` no ejecuta `finally`**: en pruebas Node, limpiar
+   temporales con `process.on("exit", cleanup)`.
+7. **API de `react-native-zeroconf` ≥0.17**: `publishService({type, protocol,
+   domain, name, port, txt})` (NO `publish(...)`), `scan({type: "duo"})` con el
+   tipo **sin guion bajo**, evento `resolved(service)` con `service.ipv4[]`,
+   `getServices()`, `unpublishService(name)` (no existe `unpublishAll`) y
+   `removeDeviceListeners()` al terminar.
+8. **PowerShell 5.1 no acepta `&&`**: usar `;` en los comandos.
+9. La ruta de trabajo opencode era `C:\Windows\System32`: trabajar siempre
+   con rutas absolutas a `C:\Users\whustaf\Desktop\DuoProyecto`.
+
+---
+
+## 6) Comandos de verificación rápida
 
 ```bash
-cd duo-app
-npx expo prebuild -p android        # genera la carpeta android/
-cd android
-./gradlew assembleRelease            # APK en android/app/build/outputs/apk/release/
+cd C:\Users\whustaf\Desktop\DuoProyecto\duo-app
+npm test                          # protocolo P2P (32 ok)
+npx expo-doctor                   # 17/18 (nota de metadata, excluida)
+npx expo export --platform android --output-dir dist-p2p   # bundle Metro
 ```
 
-> Para build local con EAS: `eas build -p android --profile preview --local`.
+Parseo de sintaxis de todos los `.js` (Babel, detecta JSX roto):
+
+```bash
+node -e "const b=require('@babel/core'),fs=require('fs'),p=require('path');const F=[];(function w(d){for(const e of fs.readdirSync(d,{withFileTypes:true})){if(['node_modules','dist','.expo'].includes(e.name))continue;const f=p.join(d,e.name);e.isDirectory()?w(f):/\.(js|jsx|mjs)$/.test(e.name)&&F.push(f);}})(process.cwd());let n=0;for(const f of F){try{b.transformSync(fs.readFileSync(f,'utf8'),{presets:[require.resolve('babel-preset-expo')],filename:f,babelrc:false,configFile:false});}catch(e){n++;console.error('ERROR',p.relative(process.cwd(),f),e.message.split('\n')[0]);}}console.log(n?n+' con error':'SINTAXIS OK ('+F.length+')');"
+```
 
 ---
 
-## 7. Cómo funciona el sistema (para mantenerlo)
+## 7) Repo y releases
 
-### 7.1 Flujo de vinculación
-
-1. Usuario A: abre app → **Crear vínculo** → llama `POST /api/pair/create`
-   → recibe `userId`, `coupleId`, `code`.
-2. Usuario B: **Ya tengo un código** → `POST /api/pair/join` con el código.
-3. El servidor agrega a B a la sala `coupleId` (máx. 2 miembros).
-4. AMBOS generan un par de claves X25519 localmente y envían la **clave pública**
-   (`pubKey`) al vincularse.
-5. Con la pública del otro + su privada, cada uno deriva el **secreto compartido**
-   → cifra/descifra los mensajes.
-
-### 7.2 Mensajes (socket.io)
-
-Cliente emite:
-- `join` → `{ coupleId, userId, token }` (validado por el servidor)
-- `message` → `{ ciphertextB64, nonce }` (el `coupleId`/`senderId` se toman de
-  lo validado en el `join`, no del cliente)
-- `typing` → `{ isTyping }`
-
-Servidor emite:
-- `message` (persistido; `ciphertextB64` para textos, `url` para fotos)
-- `typing` → `{ userId, isTyping }`
-- `partner_joined` → `{ partner }`
-- `auth_error` → `{ error }` (token inválido)
-
-### 7.3 Cifrado E2E (textos y fotos)
-
-- Cliente: `@noble/curves` (X25519) + `@noble/hashes` (HKDF-SHA256) +
-  `@noble/ciphers` (AES-256-GCM, export `gcm`).
-- Claves privadas: se guardan en el dispositivo (AsyncStorage), **nunca** al server.
-- El servidor solo almacena y retransmite texto cifrado (`ciphertext`, `nonce`).
-- Las fotos se cifran en el dispositivo y se suben como base64 del ciphertext;
-  el server las guarda como `.bin` ilegibles en `uploads/`.
-- El cliente descarga la foto cifrada, la descifra y la guarda como archivo
-  local en el dispositivo (copia local).
-- Helpers base64/UTF-8 hechos a mano (sin `Buffer` ni `TextEncoder`): Hermes no
-  los expone en React Native.
-- **Nota**: `@noble/ciphers` v1.3 exporta `gcm`, no `aes256gcm`.
-
-### 7.4 Base de datos (SQLite)
-
-Tablas: `users` (con `pub_key`), `couples` (con `token` secreto),
-`couple_members`, `messages` (con `nonce` + `ciphertext` + `text`/`url`).
-Las migraciones de columnas se aplican solas al arrancar.
-
----
-
-## 8. Endpoints del backend
-
-| Método | Ruta | Auth | Descripción |
-| ------ | ---- | ---- | ----------- |
-| GET  | `/health` | — | Estado |
-| POST | `/api/pair/create` | — | Body `{ name, emoji, pubKey }` → `userId`, `coupleId`, `code`, `token` |
-| POST | `/api/pair/join` | — | Body `{ code, name, emoji, pubKey }` |
-| GET  | `/api/couple/:coupleId?userId=` | token | Info pareja |
-| GET  | `/api/messages/:coupleId?userId=` | token | Historial |
-| POST | `/api/photo` | token | Body `{ coupleId, senderId, nonceB64, imageDataB64 }` (foto cifrada) |
-| GET  | `/uploads/:archivo` | — | Archivos `.bin` cifrados |
-
-Auth = header `x-duo-token: <token de la pareja>` + `userId` miembro de la pareja.
-
----
-
-## 9. Problemas conocidos y soluciones
-
-| Problema | Causa | Solución |
-| -------- | ----- | -------- |
-| `npm: bad interpreter: /usr/bin/env` | shebang roto en Termux | usar `node "$(command -v npm)" install` |
-| `Cannot find module 'metro/src/lib/TerminalReporter'` | instalación incompleta de metro en Termux | ejecutar en **PC** con `npm install` limpio |
-| La app no conecta al backend | URL incorrecta en `config.js` | usar IP LAN del PC (`http://IP:4000`) |
-| `node:sqlite` no existe | Node < 22.5 | actualizar Node a 22+ |
-| Puerto ocupado | server/Metro previo | cerrar procesos o cambiar `PORT` |
-| Warnings de versión Expo (`react-native@0.76.6` vs `0.76.9`) | desfase | `npx expo install --fix` en PC |
-
----
-
-## 10. Checklist para OpenCode (hacer desde el PC)
-
-1. [x] `cd duo-server && npm install && npm start` (verificar `/health`).
-2. [x] `cd duo-app && npm install`.
-3. [x] Editar `duo-app/src/config.js` con la IP del PC (o dominio del server).
-4. [ ] Probar en dos celulares con **Expo Go**: crear vínculo, unirse, texto,
-   foto y "escribiendo…".
-5. [x] `npm test` en `duo-server` (15/15).
-6. [x] APK vía GitHub Actions (o `eas login` + `eas build -p android --profile preview`).
-7. [ ] Instalar la APK en Android y repetir las pruebas.
-8. [ ] (Pendiente) Push real en background (development build).
-9. [ ] (Pendiente) HTTPS/WSS al desplegar el server públicamente.
-
----
-
-## 11. Roadmap sugerido
-
-1. **Deploy del backend** en VPS con HTTPS/WSS (ej. Railway, Fly.io, Render) y
-   dominio; actualizar `config.js`.
-2. **Push en background**: `expo-notifications` + development build + servidor de
-   push (Expo Push o FCM).
-3. **Badge de no leídos** y estado de entrega/lectura.
-4. **Editor de retos propios** por pareja.
-5. **Borrar historial/fotos** desde la app.
-6. **Publicación en Play Store** (AAB, firma de release, políticas de privacidad).
-
----
-
-## 12. Aviso legal / privacidad
-
-- App pensada para **adultos** en una relación consentida.
-- Guardar/reenviar imágenes íntimas de terceros sin consentimiento es ilegal en
-  muchos países; la app está diseñada para uso **privado entre dos personas**.
-- El servidor **no puede leer** textos ni fotos: todo llega cifrado (E2E). Solo
-  guarda el ciphertext; la clave privada nunca sale de cada dispositivo.
-- Cada dispositivo conserva su **copia local** del historial y de las fotos
-  descifradas.
+- Repo: https://github.com/whustafree/Duo (público, usuario `whustafree`).
+- Releases: https://github.com/whustafree/Duo/releases
+  - `v0.1.2` — última versión con servidor (histórica).
+  - `v0.2.0` — primera versión **P2P** (app `0.2.0`, versionCode `2`).
+- Tras cambiar dependencias: commit + push y la CI (Actions → Build APK)
+  compila y sube el artefacto; descargarlo y publicarlo en el Release.
