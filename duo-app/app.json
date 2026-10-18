@@ -31,6 +31,7 @@
       "bundler": "metro"
     },
     "plugins": [
+      "./plugins/withCleartextTraffic",
       "expo-image-picker",
       [
         "expo-notifications",
