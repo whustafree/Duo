@@ -17,9 +17,11 @@ chat directo entre los dos teléfonos, envío de fotos, juegos/retos por niveles
 cifrado extremo a extremo (E2E) de textos y fotos.
 
 **Arquitectura 100% P2P: no existe servidor.** El backend histórico
-(`duo-server/`: Express + Socket.io + SQLite) fue **eliminado**. Los dos
-teléfonos se conectan directamente entre sí en la red local (TCP + mDNS) y todo
-lo que viaja va cifrado con E2E encima del transporte.
+(`duo-server/`: Express + Socket.io + SQLite) fue **eliminado**. La ruta
+**preferente** es la red local (TCP + mDNS); para **redes distintas** hay un modo
+**WebRTC solo STUN** con el SDP intercambiado **fuera de banda por 2 QRs** (sin
+TURN y **sin servidor de señalización**). Todo va cifrado con E2E encima del
+transporte.
 
 | Carpeta | Stack | Rol |
 | ------- | ----- | --- |
@@ -39,6 +41,10 @@ lo que viaja va cifrado con E2E encima del transporte.
 - [x] **Servidor eliminado**: chat/fotos/vinculación P2P directa entre teléfonos.
 - [x] Vinculación por **QR** (`react-native-qrcode-svg` + `expo-camera`) con
       secreto de un solo uso y confirmación mediante **código SAS de 6 dígitos**.
+- [x] **Modo WebRTC por Internet sin servidor**: `react-native-webrtc` (STUN
+      only: Google/Twilio), datachannel fiable `duo-data`, SDP intercambiado
+      **fuera de banda por 2 QRs** (Offer/Answer) y fallback a **Hotspot** si no
+      hay ruta directa. La ruta LAN (TCP+mDNS) sigue siendo la preferente.
 - [x] Transporte: **TCP directo** (puerto 47777) + descubrimiento **mDNS**
       (`react-native-zeroconf`, servicio `_duo._tcp`) + reconexión con la
       dirección IP guardada por pareja.
@@ -55,20 +61,22 @@ lo que viaja va cifrado con E2E encima del transporte.
 - [x] Polyfill `crypto.getRandomValues` con RNG nativo (`expo-crypto`), cargado
       **antes** que cualquier otro módulo (`index.js`).
 - [x] Pruebas del protocolo: `duo-app/test/p2p-test.mjs` → **`npm test`**,
-      32 verificaciones (incluida una sesión TCP real sobre 127.0.0.1).
-- [x] `expo-doctor` 17/18 (la única nota es metadata de libs solo-JS, excluida
-      en `package.json`), bundle de Metro `expo export` verde.
+      **48 verificaciones** (formato de los QRs WebRTC Offer/Answer + sesión TCP
+      real sobre 127.0.0.1).
+- [x] Bundle de Metro `expo export` verde (`--platform android`).
 - [x] APK por GitHub Actions en cada push a `main` que toque `duo-app/**`
       (pruebas + `expo prebuild` + `gradlew assembleRelease`).
-- [x] Releases publicados: **v0.1.2** (versión con servidor) y
-      **v0.2.0** (primera versión P2P, app 0.2.0 / versionCode 2).
+- [x] Releases publicados: **v0.1.2** (versión con servidor),
+      **v0.2.0** (primera versión P2P) y **v0.3.0** (conexión por Internet
+      vía WebRTC STUN-only + intercambio de SDP por 2 QRs, app 0.3.0 /
+      versionCode 3).
 
 ### Pendiente
 
 - [ ] Probar en **dos celulares reales** el flujo completo: crear vínculo por
-      QR, mensajes entrantes/salientes, fotos, reconexión tras cerrar la app.
-- [ ] Chat entre redes distintas (requeriría STUN/TURN o relay: decisión de
-      diseño pendiente; hoy es solo LAN).
+      QR (LAN y WebRTC), mensajes entrantes/salientes, fotos, reconexión.
+- [ ] Probar WebRTC entre redes móviles reales (NAT estricto → fallback a
+      Hotspot; se descarta TURN/relay a propósito).
 - [ ] Más juegos/retos, borrar historial desde la app, publicar en Play Store.
 
 ---
@@ -82,11 +90,12 @@ lo que viaja va cifrado con E2E encima del transporte.
 | `duo-app/index.js` | Importa `src/services/polyfills.js` **primero** (RNG para Hermes). |
 | `duo-app/src/services/cryptocore.js` | Núcleo criptográfico **puro** (sin React Native): claves, cifrado, `deriveCoupleId`, código SAS, emoji por clave, secreto del QR. Testeable en Node. |
 | `duo-app/src/services/protocol.js` | **Puro**: encuadre de tramas (prefijo de 4 bytes + JSON, máx. 8 MB), `auth`/`pair-req`/`pair-ok`/`msg`/`ack`/`ping`/`typing`, troceo de fotos (48000 chars). |
-| `duo-app/src/services/p2p.js` | Transporte nativo: `react-native-tcp-socket` (servidor/puerto 47777 + dialer) y `react-native-zeroconf` (publica/escanea `_duo._tcp`). Regla de roles, handshake, heartbeat, pareo, candidatos mDNS, dirección guardada. |
+| `duo-app/src/services/p2p.js` | Transporte nativo (ruta preferente): `react-native-tcp-socket` (servidor/puerto 47777 + dialer) y `react-native-zeroconf` (publica/escanea `_duo._tcp`). Regla de roles, handshake, heartbeat, pareo, candidatos mDNS, dirección guardada. |
+| `duo-app/src/services/webrtc.js` | Transporte alternativo: `WebRTCService` con `react-native-webrtc` (STUN only). `createOffer`/`createAnswer`/`setAnswer`, datachannel fiable `duo-data`, espera a ICE gathering (vanilla ICE) antes de serializar el SDP. |
 | `duo-app/src/services/crypto.js` | Wrapper de almacenamiento: guarda/carga el par de claves en AsyncStorage y re-exporta `cryptocore`. |
 | `duo-app/src/context/P2PContext.js` | Capa React: historial local (`duo.msgs.<coupleId>`), bandeja de salida, envío/recepción de fotos, acks/dedup, typing, notificaciones en 2.º plano, API de pareo, dirección guardada por pareja (`duo.partner.addr.<coupleId>`), despertar con AppState. |
 | `duo-app/src/context/E2EContext.js` | Expone las claves del dispositivo; `peerPub` = `session.partnerPub`. |
-| `duo-app/src/screens/OnboardingScreen.js` | Flujo de vínculo QR: bienvenida → crear (muestra QR y espera) / escanear (CameraView) → verificación SAS → guarda sesión → Main. |
+| `duo-app/src/screens/OnboardingScreen.js` | Flujo de vínculo QR de dos vías: LAN (crear/escanear) y **WebRTC por Internet** (Offer → Answer → SAS → DataChannel) con fallback a Hotspot; guarda sesión → Main. |
 | `duo-app/src/screens/ChatScreen.js` | Chat sobre `useP2P()` (sin api/socket). Fotos con `expo-image-manipulator` (1280 px, JPEG 0.7) antes de cifrar. |
 | `duo-app/test/p2p-test.mjs` | Pruebas: copia `cryptocore.js`/`protocol.js` a temporales `.mjs` y los importa en Node (misma técnica que usaba `duo-server/test/e2e-test.mjs`). |
 
@@ -104,6 +113,28 @@ QR de A:  duo:pair:v1:<pubA b64url>:<host|->:<port>:<ps b64url>
 4. A responde `pair-ok` con su nombre/emoji/coupleId → ambos guardan sesión
    (clave `duo.session`) y entran a Main. Cada lado guarda
    `myEmoji = emojiForPub(mía)` y `partnerEmoji = emojiForPub(de la pareja)`.
+
+### Flujo WebRTC por Internet (2 QRs, sin servidor de señalización)
+
+```
+Offer  de A:  duo:webrtc:v1:offer:<pubA b64url>:<sdp b64url>
+Answer de B:  duo:webrtc:v1:answer:<pubB b64url>:<sdp b64url>
+```
+
+1. A: *Crear vínculo por Internet* → `startPairingWebRTC()` → `createOffer()`
+   (espera a que ICE recolecte candidatos STUN) → **Offer QR**.
+2. B escanea el Offer → `createAnswer()` → calcula el **SAS** con
+   `verificationCode(pubA, pubB)` → **Answer QR**.
+3. A escanea el Answer → `setAnswer()` → se abre el **DataChannel `duo-data`**.
+4. Ambas pantallas derivan el mismo `coupleId` y guardan `duo.session`. El chat
+   enruta por WebRTC (`sendFrame`), y si luego aparece la LAN (misma WiFi), se
+   prefiere TCP+mDNS.
+5. Sin ruta directa (NAT estricto) tras ~18 s → mensaje de **fallback**: activar
+   **Hotspot** en uno y conectar el otro.
+
+> El parser de QRs (`parseWebRTCQr`) y el generador (`buildWebRTCOfferQr`/
+> `buildWebRTCAnswerQr`) viven en `protocol.js` (PURO) y se prueban en `npm test`.
+> No se rompe el QR LAN (`duo:pair:v1:...`, 7 campos): son formatos disjuntos.
 
 ### Cifrado de mensajes
 
@@ -138,13 +169,14 @@ QR de A:  duo:pair:v1:<pubA b64url>:<host|->:<port>:<ps b64url>
 ```bash
 cd duo-app
 npm install
-npm test              # 32 verificaciones del protocolo P2P
+npm test              # 48 verificaciones del protocolo P2P
 npx expo start
 ```
 
-> Importante: `react-native-tcp-socket` y `react-native-zeroconf` son módulos
-> nativos que **Expo Go no incluye**. Para probar la conexión P2P real se
-> necesita un development build (`npx expo run:android`) o el APK.
+> Importante: `react-native-tcp-socket`, `react-native-zeroconf` y
+> `react-native-webrtc` son módulos nativos que **Expo Go no incluye**. Para
+> probar la conexión P2P real se necesita un development build
+> (`npx expo run:android`) o el APK.
 
 ### Generar el APK (recomendado: GitHub Actions)
 
@@ -171,11 +203,14 @@ npx eas build -p android --profile preview
 
 ## 4) Decisiones de diseño (por qué es así)
 
-- **TCP + mDNS en vez de WebRTC**: las parejas están en la misma WiFi de casa
-  (como el antiguo setup con servidor en la PC). Así hay reconexión automática
-  sin repetir un intercambio QR en cada sesión. Contrapartida aceptada: los dos
-  deben estar en la misma WiFi con la app abierta para intercambiar; lo no
-  entregado queda encolado localmente.
+- **TCP + mDNS como ruta preferente**: las parejas están en la misma WiFi de
+  casa. Así hay reconexión automática sin repetir un intercambio QR en cada
+  sesión. Contrapartida aceptada: los dos deben estar en la misma red con la app
+  abierta para intercambiar; lo no entregado queda encolado localmente.
+- **WebRTC solo STUN como alternativa para redes distintas**, con el SDP
+  intercambiado fuera de banda por 2 QRs: así no hace falta **ningún** servidor
+  de señalización. Se descarta **TURN/relay** a propósito (privacidad + coste):
+  si el NAT lo impide, se ofrece el atajo por **Hotspot** en lugar de relear.
 - **Regla determinista de roles** (clave pública menor = dialer; quien crea el
   vínculo escucha, quien se une marca): evita sockets duplicados A↔B y
   condiciones de carrera en el descubrimiento.
@@ -204,7 +239,9 @@ npx eas build -p android --profile preview
    (verificar con `npm ls` y que no haya `node_modules` anidados con módulos
    nativos).
 4. **Versiones nativas = las de `expo/bundledNativeModules.json`** del SDK:
-   instalar con `npx expo install <pkg>` para que respete SDK 52.
+   instalar con `npx expo install <pkg>` para que respete SDK 52. Excepción:
+   `react-native-webrtc` **no** está en ese mapa; se fija a mano
+   (`124.0.8`, compatible con RN 0.76 / SDK 52 y arquitectura clásica).
 5. **`@babel/register` debe ser 7.x** (Babel 8 rompe el setup de pruebas).
 6. **`process.exit()` no ejecuta `finally`**: en pruebas Node, limpiar
    temporales con `process.on("exit", cleanup)`.
@@ -223,8 +260,7 @@ npx eas build -p android --profile preview
 
 ```bash
 cd C:\Users\whustaf\Desktop\DuoProyecto\duo-app
-npm test                          # protocolo P2P (32 ok)
-npx expo-doctor                   # 17/18 (nota de metadata, excluida)
+npm test                          # protocolo P2P (48 ok)
 npx expo export --platform android --output-dir dist-p2p   # bundle Metro
 ```
 
@@ -242,5 +278,8 @@ node -e "const b=require('@babel/core'),fs=require('fs'),p=require('path');const
 - Releases: https://github.com/whustafree/Duo/releases
   - `v0.1.2` — última versión con servidor (histórica).
   - `v0.2.0` — primera versión **P2P** (app `0.2.0`, versionCode `2`).
+  - `v0.3.0` — **P2P + Internet** sin servidor: WebRTC con STUN gratuitos e
+    intercambio de SDP por 2 QRs (app `0.3.0`, versionCode `3`). Fallback a
+    Hotspot si no hay ruta directa.
 - Tras cambiar dependencias: commit + push y la CI (Actions → Build APK)
   compila y sube el artefacto; descargarlo y publicarlo en el Release.

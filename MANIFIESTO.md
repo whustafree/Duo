@@ -10,9 +10,13 @@ Fecha: 18 de octubre de 2026
 
 **Duo** es una app privada para **parejas** (solo 2 personas vinculadas). Permite:
 
-- Chat privado entre los dos teléfonos, **directo (P2P)**: **no hay servidor**.
+- Chat privado entre los dos teléfonos, **directo (P2P)**: **no hay servidor**
+  ni servidor de señalización.
 - Envío de **fotos** (cifradas, por el mismo enlace directo).
 - Vinculación escaneando un **código QR** (con código de verificación de 6 dígitos).
+- **Conectar por Internet sin servidor** (WebRTC solo STUN, SDP intercambiado
+  fuera de banda por 2 QRs). Ruta preferente: WiFi/mDNS; si no hay ruta directa,
+  fallback a **Hotspot**.
 - **Juegos y retos** para mejorar/acercar la relación, con 4 niveles de intensidad:
   🌸 Suave · 💞 Romántico · 🌶️ Picante · 🔥 Atrevido.
 - **Cifrado extremo a extremo (E2E)** de textos y fotos: X25519 + HKDF-SHA256 +
@@ -44,7 +48,7 @@ duo-app/
 ├── babel.config.js
 ├── package.json            # incluye "npm test" → pruebas del protocolo P2P
 ├── test/
-│   └── p2p-test.mjs        # 32 verificaciones (protocolo + TCP real en Node)
+│   └── p2p-test.mjs        # 48 verificaciones (protocolo + QRs WebRTC + TCP real)
 └── src/
     ├── theme.js            # Colores, espaciados, tipografía
     ├── data/mock.js        # Datos simulados (solo juegos/demo)
@@ -58,11 +62,13 @@ duo-app/
     │   │                       #   coupleId, código SAS, emojis) — testeable en Node
     │   ├── crypto.js           # Guarda/carga el par de claves en AsyncStorage
     │   ├── protocol.js         # Tramas, auth, emparejamiento, msgs, fotos (PURO)
+    │   │                       #   + build/parse de QRs WebRTC (Offer/Answer)
     │   ├── p2p.js              # TCP directo + descubrimiento mDNS (zeroconf)
+    │   ├── webrtc.js           # WebRTC STUN-only (datachannel "duo-data")
     │   └── notifications.js    # Notificaciones locales
     ├── components/{Avatar,PrimaryButton,ChallengeDeck}.js
     └── screens/
-        ├── OnboardingScreen.js # Vincular por QR (crear / escanear) + SAS
+        ├── OnboardingScreen.js # Vincular por QR (LAN) + modo WebRTC 2 QRs + SAS
         ├── ChatScreen.js       # Chat + fotos + typing (todo por P2P)
         ├── GamesScreen.js      # Lista de juegos
         ├── TruthDareScreen.js  # Verdad o Reto
@@ -100,10 +106,26 @@ duo-app/
    desconectada, el mensaje queda **pendiente en el dispositivo** y se envía
    solo en cuanto los dos vuelven a estar en línea.
 
+### Conectar entre redes distintas (WebRTC sin servidor)
+
+Cuando los dos no comparten WiFi, se usa **WebRTC solo STUN** con intercambio de
+SDP **fuera de banda por 2 QRs** (no hay servidor de señalización):
+
+1. **A**: *Crear vínculo por Internet* → muestra un **Offer QR**.
+2. **B**: escanea el Offer (calcula y muestra el **código SAS**) → muestra un
+   **Answer QR**.
+3. **A**: escanea el Answer → se abre el **DataChannel cifrado** `duo-data`.
+4. Si no hay ruta directa (NAT estricto) en ~18 s, se indica el **fallback**:
+   activar **Hotspot** en uno y conectar el otro.
+
+Sin **TURN** ni relay. Datos cifrados E2E igual que en LAN; solo viajan claves
+públicas y SDP.
+
 ### Requisitos de uso
 
-- Ambos en la **misma red WiFi** y con la **app abierta** (o al menos abrirla
-  para recibir lo acumulado). Es el precio de no tener ningún servidor.
+- **Misma WiFi** (ruta preferente, TCP+mDNS) **o** usar el modo **WebRTC por
+  Internet** (2 QRs). En ambos casos, con la **app abierta** (o abrirla para
+  recibir lo acumulado). Es el precio de no tener ningún servidor.
 
 ---
 
@@ -114,13 +136,13 @@ duo-app/
 ```bash
 cd duo-app
 npm install
-npm test           # pruebas del protocolo P2P (32 verificaciones)
+npm test           # pruebas del protocolo P2P (48 verificaciones)
 npx expo start     # escanea el QR con Expo Go
 ```
 
 > Para probar el flujo P2P completo se necesita un **development build** o el
-> APK: `react-native-tcp-socket` y `react-native-zeroconf` son módulos nativos
-> que Expo Go no incluye.
+> APK: `react-native-tcp-socket`, `react-native-zeroconf` y
+> `react-native-webrtc` son módulos nativos que Expo Go no incluye.
 
 ### Generar APK
 
@@ -138,6 +160,8 @@ cd duo-app && eas build -p android --profile preview
 - [x] Maqueta completa de UI (todas las pantallas).
 - [x] **Sin servidor**: chat/fotos/vinculación P2P directa entre los dos teléfonos.
 - [x] Vinculación por **QR** + confirmación con código SAS de 6 dígitos.
+- [x] **Conectar por Internet sin servidor**: WebRTC **solo STUN** + intercambio
+      de SDP fuera de banda por **2 QRs** (Offer/Answer) + fallback a Hotspot.
 - [x] Descubrimiento automático por mDNS + reconexión con la dirección guardada.
 - [x] Chat + "escribiendo…" + acks y **bandeja de salida** (lo no entregado se
       envía al reconectar).
@@ -146,8 +170,8 @@ cd duo-app && eas build -p android --profile preview
 - [x] Notificaciones locales.
 - [x] Cifrado E2E **completo** de textos y fotos (X25519 + AES-256-GCM).
 - [x] Polyfill de `crypto.getRandomValues` con RNG nativo (expo-crypto).
-- [x] Tests del protocolo P2P (`duo-app/test/p2p-test.mjs`, 32 verificaciones,
-      incluida una sesión TCP real en Node).
+- [x] Tests del protocolo P2P (`duo-app/test/p2p-test.mjs`, 48 verificaciones,
+      incluidos los QRs WebRTC Offer/Answer y una sesión TCP real en Node).
 - [x] Repo en GitHub: https://github.com/whustafree/Duo
 - [x] Build automático de APK con GitHub Actions (`.github/workflows/build-apk.yml`).
 
@@ -156,9 +180,9 @@ cd duo-app && eas build -p android --profile preview
 ## 6. Pendientes / ideas
 
 - [ ] Probar el flujo completo en **dos celulares reales** (crear vínculo,
-      mensajes, fotos, reconexión).
-- [ ] Chat **entre redes distintas** (requeriría algún servicio de ayuda como
-      STUN/TURN o un relay — decisión de diseño pendiente, hoy es solo LAN).
+      mensajes, fotos, reconexión), incluido el modo WebRTC por Internet.
+- [ ] Probar WebRTC entre redes móviles reales (algunos NAT estrictos exigirán
+      el fallback a Hotspot; se descarta TURN/relay a propósito).
 - [ ] Más juegos y retos; editar/crear retos propios.
 - [ ] Borrar historial / fotos desde la app.
 - [ ] Notificaciones push reales (hoy solo locales).
@@ -171,8 +195,10 @@ cd duo-app && eas build -p android --profile preview
 - El archivo `.tar.gz` **NO** incluye `node_modules`; hay que instalarlos.
 - El paquete Android es `com.duo.app` (cambiar en `app.json` si se publica).
 - Puerto P2P fijo: **47777/TCP** (+ mDNS `_duo._tcp`).
+- WebRTC: `react-native-webrtc@124.0.8` (compatible RN 0.76 / SDK 52), solo
+  servidores **STUN** (Google/Twilio); datachannel fiable `duo-data`. **Sin TURN.**
 - `newArchEnabled: false` en `app.json` (módulos nativos `tcp-socket`/`zeroconf`
-  están probados con la arquitectura clásica).
+  están probados con la arquitectura clásica; webrtc 124.x también).
 - Hermes no expone `crypto.getRandomValues`: `src/services/polyfills.js` lo
   instala con el RNG nativo **antes** de cualquier uso de `@noble/*`.
 
@@ -180,7 +206,10 @@ cd duo-app && eas build -p android --profile preview
 
 ## 8. Privacidad
 
-- **No existe ningún servidor**: los mensajes solo viajan del teléfono A al B.
+- **No existe ningún servidor** ni servidor de señalización: los mensajes solo
+  viajan del teléfono A al B. En WebRTC solo se usan servidores **STUN** (para
+  descubrir la dirección pública); no ven el contenido (va cifrado E2E) y **no
+  hay relay/TURN**.
 - Los textos **y las fotos** van cifrados E2E en el propio enlace: aunque alguien
   capture el tráfico de la WiFi, solo ve bytes aleatorios.
 - La clave privada **nunca sale** del dispositivo; el QR solo contiene la clave

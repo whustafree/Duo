@@ -11,12 +11,14 @@ y el resumen en `../MANIFIESTO.md`.
 ## Qué es
 
 **Duo** es una app Expo (SDK 52) para parejas: chat de texto + fotos, juegos y
-retos. **No hay backend**: los dos teléfonos se conectan **directamente** por
-TCP en la misma WiFi (descubrimiento mDNS, puerto `47777`) y todo va cifrado
-E2E (X25519 + HKDF-SHA256 + AES-256-GCM, libs `@noble/*`).
+retos. **No hay backend ni servidor de señalización**: la ruta **preferente** es
+**TCP directo** en la misma WiFi (descubrimiento mDNS, puerto `47777`); si no hay
+ruta directa (redes distintas), hay un modo **WebRTC STUN-only** con intercambio
+de SDP **fuera de banda por 2 QRs** (sin TURN, sin signaling server). Todo va
+cifrado E2E (X25519 + HKDF-SHA256 + AES-256-GCM, libs `@noble/*`).
 
 - Repo: https://github.com/whustafree/Duo (APKs en Releases; CI en Actions).
-- Estado: `npm test` 32/32, `npx expo-doctor` verde, `npx expo export` verde.
+- Estado: `npm test` 48/48, `npx expo export` verde (bundle Metro Android).
 
 ## Comandos
 
@@ -42,14 +44,18 @@ src/services/
   cryptocore.js           # NÚCLEO PURO: claves, AES-GCM, coupleId SAS, QR
   crypto.js               # wrapper AsyncStorage del par de claves + re-export
   protocol.js             # PURO: tramas (4B + JSON, máx 8MB), auth/pair/msg/photo
+                          #   + build/parse de QRs WebRTC (Offer/Answer)
   p2p.js                  # transporte nativo: TCP server/dial + zeroconf mDNS
+  webrtc.js               # WebRTC STUN-only (react-native-webrtc): RTCPeerConnection,
+                          #   RTCSessionDescription, RTCIceCandidate, datachannel "duo-data"
   notifications.js        # notificaciones locales
 src/context/
   SessionContext.js       # sesión de la pareja (duo.session) / clear()
   E2EContext.js           # claves del dispositivo; peerPub = session.partnerPub
   P2PContext.js           # historial, bandeja, fotos, typing, pareo, eventos
 src/screens/
-  OnboardingScreen.js     # vínculo QR (crear/escanear) + código SAS
+  OnboardingScreen.js     # vínculo QR LAN (crear/escanear) + modo WebRTC 2 QRs
+                          #   (Offer/Answer) + código SAS + fallback Hotspot
   ChatScreen.js           # chat sobre useP2P()
   ProfileScreen.js        # código de verificación, desvincular (clear())
   Games/TruthDare/Challenge/Dice/QuestionsScreen  # juegos (datos mock locales)
@@ -72,16 +78,51 @@ test/p2p-test.mjs         # copia cryptocore/protocol a .mjs temporales y los
    reconectar; dirección recordada por pareja: `duo.partner.addr.<coupleId>`.
 6. **Foto**: cifrar SIEMPRE en origen; trocear en chunks de 48000 chars de
    base64; el emsamblador deduplica por `id`.
+7. **QR WebRTC sin romper el QR LAN**: los formatos son distintos y disjuntos.
+   - Vínculo LAN (7 campos): `duo:pair:v1:<pub>:<host|->:<port>:<ps>`.
+   - WebRTC Offer (6 campos): `duo:webrtc:v1:offer:<pubA>:<sdp_b64url>`.
+   - WebRTC Answer (6 campos): `duo:webrtc:v1:answer:<pubB>:<sdp_b64url>`.
+   `parseWebRTCQr()` (en `protocol.js`, puro) devuelve `null` con cualquier otra
+   cosa. El SDP va en base64url (sin `:`), así que el split por `:` da 6 campos.
+8. **WebRTC es SOLO STUN** (`stun.l.google.com`, `stun1.l.google.com`,
+   `global.stun.twilio.com`): **nunca TURN ni relay**. Se espera a que ICE
+   termine de recolectar (vanilla ICE) antes de meter el SDP en el QR, porque no
+   hay canal para intercambiar candidatos. Requiere `react-native-webrtc` (módulo
+   nativo, no incluido en Expo Go).
+
+### Modo WebRTC (Internet, sin servidor de señalización)
+
+Fallback cuando los dos no comparten WiFi. Ruta preferente sigue siendo LAN:
+al guardarse la sesión, `p2p.js` intenta TCP+mDNS y, si conecta, `P2PContext`
+apaga WebRTC y usa LAN.
+
+1. **A** "Crear vínculo por Internet" → `startPairingWebRTC()` → `createOffer()`
+   (espera ICE) → muestra **Offer QR**.
+2. **B** escanea el Offer → `createAnswer()` → calcula el **SAS**
+   (`verificationCode(pubA, pubB)`) → muestra **Answer QR**.
+3. **A** escanea el Answer → `setAnswer()` → **DataChannel `duo-data`** abierto.
+4. Ambas pantallas derivan el mismo `coupleId` y guardan sesión; el chat usa el
+   datachannel (`sendFrame` enruta a WebRTC si está conectado; si no, a TCP).
+5. **Sin ruta directa** (timeout/ICE failed ≈18 s): se muestra la instrucción de
+   **fallback a Hotspot** (activar punto de acceso en uno y conectar el otro).
+
+Payloads: los frames se envían por el datachannel como **JSON string**; el
+receptor los procesa directo (los bytes siguen pasando por `FrameParser` por si
+llegan como binario). El cifrado E2E es idéntico: solo viajan ciphertext+nonce,
+nunca claves privadas.
 
 ### Dependencias nativas (cuidado)
 
 - Instalar paquetes Expo con `npx expo install` (respeta SDK 52). Actuales:
   `expo-camera@~16.0.18`, `expo-crypto@~14.0.2`, `expo-image-manipulator@~13.0.6`,
   `expo-network@~7.0.5`, `react-native-svg@15.8.0`, además de
-  `react-native-tcp-socket`, `react-native-zeroconf`, `react-native-qrcode-svg`.
+  `react-native-tcp-socket`, `react-native-zeroconf`, `react-native-qrcode-svg`,
+  `react-native-webrtc@124.0.8` (compatible con RN 0.76 / SDK 52; **no** está en
+  `bundledNativeModules.json`, así que no sale con `expo install`).
 - **Autolinking solo mira un nivel** bajo `node_modules`: verificar que ninguna
   lib nativa quede anidada (`npm ls <pkg>`).
-- `newArchEnabled: false` en `app.json` (tcp-socket/zeroconf = bridge clásico).
+- `newArchEnabled: false` en `app.json` (tcp-socket/zeroconf = bridge clásico;
+  `react-native-webrtc` 124.x también corre en arquitectura clásica).
 - `@babel/register` debe ser **7.x** (devDependency, para `npm test`).
 - socket.io-client, api.js, socket.js, config.js y `duo-server/` fueron
   eliminados: **no reintroducir servidor ni `fetch` a una API**.
@@ -104,8 +145,7 @@ evento `resolved(service)` (`service.ipv4[]`, `service.port`), `getServices()`,
 ## Verificación antes de dar por bueno un cambio
 
 ```bash
-npm test                          # 32 ok
-npx expo-doctor                   # verde
+npm test                          # 48 ok
 npx expo export --platform android --output-dir dist-p2p   # bundle ok
 ```
 

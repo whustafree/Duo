@@ -7,6 +7,7 @@ android/
 ios/
 dist/
 web-build/
+*.apk
 
 # Logs y entorno
 *.log

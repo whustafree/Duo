@@ -165,6 +165,49 @@ async function main() {
     const qrReq = P.buildPairReq(qp[6], A.publicKeyB64, "Ana", "🐼");
     ok(!!P.verifyPairReq(qrReq, qp[6]), "el ps extraído del QR abre el diálogo de vinculación");
 
+    console.log("\n4c) Formato de los QRs WebRTC (Offer/Answer)");
+    const fakeSdp = { type: "offer", sdp: "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n" };
+    const offerQr = P.buildWebRTCOfferQr(A.publicKeyB64, fakeSdp);
+    const offerParts = offerQr.split(":");
+    ok(offerParts.length === 6, "el Offer QR tiene 6 campos separados por ':'");
+    ok(
+      offerParts[0] === "duo" &&
+        offerParts[1] === "webrtc" &&
+        offerParts[2] === "v1" &&
+        offerParts[3] === "offer",
+      "prefijo duo:webrtc:v1:offer en su posición"
+    );
+    ok(
+      C.bytesToB64(C.b64ToBytes(offerParts[4])) === A.publicKeyB64,
+      "la clave pública viaja en el Offer y se recupera igual"
+    );
+    const parsedOffer = P.parseWebRTCQr(offerQr);
+    ok(
+      parsedOffer &&
+        parsedOffer.kind === "offer" &&
+        parsedOffer.pub === A.publicKeyB64 &&
+        parsedOffer.sdp.sdp === fakeSdp.sdp,
+      "parseWebRTCQr recupera Offer, pub y SDP exactos"
+    );
+    const answerQr = P.buildWebRTCAnswerQr(B.publicKeyB64, { type: "answer", sdp: fakeSdp.sdp });
+    const parsedAnswer = P.parseWebRTCQr(answerQr);
+    ok(
+      parsedAnswer && parsedAnswer.kind === "answer" && parsedAnswer.pub === B.publicKeyB64,
+      "parseWebRTCQr recupera el Answer"
+    );
+    ok(
+      P.parseWebRTCQr(`duo:pair:v1:${qrPub}:192.168.1.50:47777:${ps}`) === null,
+      "el QR de vínculo LAN NO se confunde con un QR WebRTC"
+    );
+    ok(P.parseWebRTCQr("basura") === null, "texto cualquiera no es un QR WebRTC");
+    ok(
+      P.parseWebRTCQr("duo:webrtc:v1:offer:abc") === null,
+      "Offer incompleto rechazado sin lanzar"
+    );
+    const sasW = C.verificationCode(A.publicKeyB64, B.publicKeyB64);
+    const sasW2 = C.verificationCode(B.publicKeyB64, A.publicKeyB64);
+    ok(sasW === sasW2 && /^[0-9]{6}$/.test(sasW), "SAS idéntico al comparar las claves del Offer/Answer");
+
     console.log("\n5) Mensajes cifrados");
     const texto = "Nos vemos en casa 💌 ñáéíóú";
     const msg = P.buildMsg("m_test", texto, A.privateKeyB64, B.publicKeyB64);

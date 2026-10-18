@@ -57,6 +57,7 @@
     "react-native-svg": "15.8.0",
     "react-native-tcp-socket": "^6.4.3",
     "react-native-web": "^0.19.13",
+    "react-native-webrtc": "124.0.8",
     "react-native-zeroconf": "^0.17.6"
   },
   "devDependencies": {

@@ -13,12 +13,13 @@ import { P2P } from "../services/p2p";
 import { useSession } from "./SessionContext";
 import { useE2E } from "./E2EContext";
 import {
-  decryptText,
   decryptBytes,
   encryptBytes,
   bytesToB64,
   b64ToBytes,
   randomId,
+  verificationCode,
+  deriveCoupleId,
 } from "../services/cryptocore";
 import {
   buildMsg,
@@ -27,12 +28,17 @@ import {
   splitPhoto,
   PhotoAssembler,
   readMsg,
+  FrameParser,
+  buildWebRTCOfferQr,
+  buildWebRTCAnswerQr,
+  parseWebRTCQr,
 } from "../services/protocol";
 import {
   configureNotifications,
   requestNotificationPermission,
   notifyNewMessage,
 } from "../services/notifications";
+import { WebRTCService } from "../services/webrtc";
 
 // Orquesta la conexión P2P y el chat local:
 //  - Estado de conexión (en línea / conectando / sin conexión).
@@ -50,6 +56,10 @@ function msgsKey(coupleId) {
 
 const ADDR_KEY = "duo.partner.addr";
 
+function log(...args) {
+  if (global.__DUO_DEBUG) console.log("[p2pctx]", ...args);
+}
+
 export function P2PProvider({ children }) {
   const { session } = useSession();
   const { keys } = useE2E();
@@ -58,6 +68,7 @@ export function P2PProvider({ children }) {
   const [typing, setTyping] = useState(false);
   const [pendingPair, setPendingPair] = useState(null); // {name, emoji, sas}
   const [pairedResult, setPairedResult] = useState(null);
+  const [connMode, setConnMode] = useState("lan"); // lan | webrtc
 
   const p2pRef = useRef(null);
   const assemblerRef = useRef(new PhotoAssembler());
@@ -66,6 +77,10 @@ export function P2PProvider({ children }) {
   const typingTimer = useRef(null);
   const sessionRef = useRef(session);
   const keysRef = useRef(keys);
+  const webrtcRef = useRef(null);
+  const webrtcModeRef = useRef(false);
+  const webrtcParserRef = useRef(new FrameParser());
+  const handleFrameRef = useRef(null);
   sessionRef.current = session;
   keysRef.current = keys;
 
@@ -84,8 +99,6 @@ export function P2PProvider({ children }) {
     );
   }, []);
 
-  // La dirección recordada es POR PAREJA: un vínculo nuevo nunca reutiliza la
-  // IP del anterior.
   const addrKey = (cid) => `${ADDR_KEY}.${cid}`;
 
   const getSavedAddr = useCallback(async () => {
@@ -105,7 +118,6 @@ export function P2PProvider({ children }) {
     AsyncStorage.setItem(addrKey(cid), JSON.stringify(addr)).catch(() => {});
   }, []);
 
-  // Carga del historial local al cambiar de pareja.
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -129,7 +141,6 @@ export function P2PProvider({ children }) {
     };
   }, [coupleId]);
 
-  // Instancia P2P: configurar + arrancar/parar según el vínculo.
   useEffect(() => {
     configureNotifications();
     requestNotificationPermission();
@@ -137,9 +148,20 @@ export function P2PProvider({ children }) {
     const p2p = p2pRef.current || new P2P();
     p2pRef.current = p2p;
     p2p.onEvent((type, data) => {
-      if (type === "status") setStatus(data);
-      else if (type === "session") flushOutbox();
-      else if (type === "frame") handleFrame(data);
+      if (type === "status") {
+        // En modo WebRTC el estado lo manda el DataChannel; no dejar que el
+        // sondeo LAN (que sigue activo como ruta preferente) lo pise.
+        if (webrtcModeRef.current && webrtcRef.current?.isConnected()) return;
+        setStatus(data);
+      } else if (type === "session") {
+        flushOutbox();
+        setConnMode("lan");
+        webrtcModeRef.current = false;
+        if (webrtcRef.current) {
+          try { webrtcRef.current.cleanup(); } catch {}
+          webrtcRef.current = null;
+        }
+      } else if (type === "frame") handleFrame(data);
       else if (type === "pair-request")
         setPendingPair({ ...data, ts: Date.now() });
       else if (type === "paired") setPairedResult(data);
@@ -154,9 +176,6 @@ export function P2PProvider({ children }) {
         getSavedAddr,
         saveAddr,
       });
-      // Arranca SIEMPRE con las claves listas (servidor TCP + mDNS), incluso
-      // sin vincular: así el otro teléfono puede encontrarlo para emparejar.
-      // scheduleDial solo actúa si ya hay pareja.
       p2p.start();
     } else {
       p2p.stop();
@@ -166,7 +185,6 @@ export function P2PProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [priv, myPub, partnerPub, session?.myName, session?.myEmoji]);
 
-  // Reactivar al volver la app a primer plano.
   useEffect(() => {
     const sub = AppState.addEventListener("change", (st) => {
       if (st === "active") p2pRef.current?.wake();
@@ -210,7 +228,20 @@ export function P2PProvider({ children }) {
     }
   }, []);
 
-  // ---------------------------------------------------------------- envío --
+  const sendFrame = useCallback(
+    (frame) => {
+      if (webrtcModeRef.current && webrtcRef.current && webrtcRef.current.isConnected()) {
+        try {
+          webrtcRef.current.send(JSON.stringify(frame));
+          return true;
+        } catch (e) {
+          return false;
+        }
+      }
+      return p2pRef.current?.send(frame);
+    },
+    []
+  );
 
   const sendFrameFor = useCallback(
     (row) => {
@@ -229,7 +260,8 @@ export function P2PProvider({ children }) {
             const frames = splitPhoto(row.id, enc.nonceB64, enc.cipherB64);
             let ok = true;
             for (const f of frames) {
-              if (!p2pRef.current?.send(f)) {
+              const sent = sendFrame(f);
+              if (!sent) {
                 ok = false;
                 break;
               }
@@ -240,12 +272,12 @@ export function P2PProvider({ children }) {
           }
         })();
       }
-      return p2pRef.current?.send(buildMsg(row.id, row.text, priv, partnerPub));
+      const msgFrame = buildMsg(row.id, row.text, priv, partnerPub);
+      return sendFrame(msgFrame);
     },
-    [priv, partnerPub]
+    [priv, partnerPub, sendFrame]
   );
 
-  // Reenviar todo lo pendiente cuando vuelve la conexión.
   const flushOutbox = useCallback(() => {
     const rows = msgsRef.current.filter((m) => m.from === "me" && m.pending);
     for (const row of rows) {
@@ -272,8 +304,6 @@ export function P2PProvider({ children }) {
 
   const sendPhoto = useCallback(
     async (tmpUri) => {
-      // Copia permanente en el almacenamiento de la app (el temporizador del
-      // selector de imágenes borra sus archivos).
       const id = `m_${randomId()}`;
       const dest = `${FileSystem.documentDirectory}duo_send_${id}.jpg`;
       await FileSystem.copyAsync({ from: tmpUri, to: dest });
@@ -294,12 +324,79 @@ export function P2PProvider({ children }) {
 
   const sendTyping = useCallback(
     (isTyping) => {
-      p2pRef.current?.send(buildTyping(isTyping));
+      const frame = buildTyping(isTyping);
+      sendFrame(frame);
     },
-    []
+    [sendFrame]
   );
 
-  // -------------------------------------------------------------- recepción --
+  const enableWebRTC = useCallback(() => {
+    webrtcModeRef.current = true;
+    setConnMode("webrtc");
+    setStatus("connecting");
+  }, []);
+
+  const disableWebRTC = useCallback(() => {
+    webrtcModeRef.current = false;
+    setConnMode("lan");
+    if (webrtcRef.current) {
+      try { webrtcRef.current.cleanup(); } catch {}
+      webrtcRef.current = null;
+    }
+    // Devolver el estado al que reporta el transporte LAN.
+    setStatus(p2pRef.current?.status || "offline");
+  }, []);
+
+  // Datachannel → tramas. Recibe string (JSON) o bytes; se reusa FrameParser
+  // para tolerar fragmentación (mismo encuadre que TCP).
+  const onWebRTCData = useCallback((data) => {
+    try {
+      if (typeof data === "string") {
+        try {
+          handleFrameRef.current?.(JSON.parse(data));
+        } catch {}
+        return;
+      }
+      const frames = webrtcParserRef.current.feed(new Uint8Array(data));
+      for (const f of frames) handleFrameRef.current?.(f);
+    } catch (e) {}
+  }, []);
+
+  const onWebRTCState = useCallback((state) => {
+    if (!webrtcModeRef.current) return;
+    if (state === "connected" || state === "completed") setStatus("online");
+    else if (state === "failed" || state === "closed") setStatus("connecting");
+    else if (state === "disconnected") setStatus("connecting");
+  }, []);
+
+  const ensureWebRTCService = useCallback(() => {
+    if (!webrtcRef.current) {
+      webrtcRef.current = new WebRTCService();
+      webrtcRef.current.onData(onWebRTCData);
+      webrtcRef.current.onStateChange(onWebRTCState);
+    }
+  }, [onWebRTCData, onWebRTCState]);
+
+  const createWebRTCOffer = useCallback(async () => {
+    ensureWebRTCService();
+    return await webrtcRef.current.createOffer();
+  }, [ensureWebRTCService]);
+
+  const createWebRTCAnswer = useCallback(async (offer) => {
+    ensureWebRTCService();
+    return await webrtcRef.current.createAnswer(offer);
+  }, [ensureWebRTCService]);
+
+  const setWebRTCAnswer = useCallback(async (answer) => {
+    if (!webrtcRef.current) return;
+    await webrtcRef.current.setAnswer(answer);
+    enableWebRTC();
+  }, [enableWebRTC]);
+
+  const addWebRTCIceCandidate = useCallback(async (candidate) => {
+    if (!webrtcRef.current) return;
+    await webrtcRef.current.addIceCandidate(candidate);
+  }, []);
 
   const handleFrame = useCallback(
     async (frame) => {
@@ -307,7 +404,7 @@ export function P2PProvider({ children }) {
 
       if (frame.t === "msg") {
         const got = readMsg(frame, priv, partnerPub);
-        p2pRef.current?.send(buildAck(frame.id));
+        sendFrame(buildAck(frame.id));
         if (!got) return;
         const added = appendMessage({
           id: got.id,
@@ -346,7 +443,7 @@ export function P2PProvider({ children }) {
           priv,
           partnerPub
         );
-        p2pRef.current?.send(buildAck(frame.id));
+        sendFrame(buildAck(frame.id));
         if (!plain) return;
         const dest = `${FileSystem.documentDirectory}duo_${done.id}.jpg`;
         try {
@@ -367,10 +464,9 @@ export function P2PProvider({ children }) {
         if (added) notifyIfBackground("📷 Te envió una foto");
       }
     },
-    [priv, partnerPub, appendMessage, markDelivered, notifyIfBackground]
+    [priv, partnerPub, appendMessage, markDelivered, notifyIfBackground, sendFrame]
   );
-
-  // --------------------------------------------------------- emparejamiento --
+  handleFrameRef.current = handleFrame;
 
   const startPairing = useCallback(
     async (name) => {
@@ -387,6 +483,15 @@ export function P2PProvider({ children }) {
       return p2p.startPairing({ name, emoji: sessionRef.current?.myEmoji });
     },
     [priv, myPub, getSavedAddr, saveAddr]
+  );
+
+  const startPairingWebRTC = useCallback(
+    async (name) => {
+      if (!priv || !myPub) throw new Error("La app aún no está lista.");
+      const offer = await createWebRTCOffer();
+      return { qr: buildWebRTCOfferQr(myPub, offer), pub: myPub };
+    },
+    [priv, myPub, createWebRTCOffer]
   );
 
   const cancelPairing = useCallback(() => {
@@ -407,13 +512,35 @@ export function P2PProvider({ children }) {
 
   const joinPairing = useCallback(
     async (qr, name) => {
+      const webrtcQr = parseWebRTCQr(qr);
+      if (webrtcQr && webrtcQr.kind === "offer") {
+        // B escaneó el Offer de A: calcula el Answer y su propio QR.
+        const answer = await createWebRTCAnswer(webrtcQr.sdp);
+        // B ya está en modo WebRTC: al abrirse el DataChannel podrá enviar.
+        enableWebRTC();
+        const answerQr = buildWebRTCAnswerQr(myPub, answer);
+        const sas = verificationCode(myPub, webrtcQr.pub);
+        const coupleId = deriveCoupleId(myPub, webrtcQr.pub);
+        return {
+          mode: "webrtc-answer",
+          qr: answerQr,
+          sas,
+          partnerPub: webrtcQr.pub,
+          coupleId,
+        };
+      }
+      if (webrtcQr && webrtcQr.kind === "answer") {
+        // A escaneó el Answer de B: cierra el handshake SDP.
+        await setWebRTCAnswer(webrtcQr.sdp);
+        const sas = verificationCode(myPub, webrtcQr.pub);
+        const coupleId = deriveCoupleId(myPub, webrtcQr.pub);
+        return { mode: "webrtc-connected", partnerPub: webrtcQr.pub, coupleId, sas };
+      }
       const p2p = p2pRef.current;
       if (!p2p || !priv || !myPub) throw new Error("La app aún no está lista.");
       p2p.configure({
         keys: keysRef.current,
         partnerPub: null,
-        // El nombre que escribió quien escanea debe viajar en el pair-req,
-        // para que la otra pantalla lo muestre bien.
         myName: name || sessionRef.current?.myName,
         myEmoji: sessionRef.current?.myEmoji,
         getSavedAddr,
@@ -421,16 +548,23 @@ export function P2PProvider({ children }) {
       });
       return p2p.joinPairing(qr);
     },
-    [priv, myPub, getSavedAddr, saveAddr]
+    [priv, myPub, getSavedAddr, saveAddr, createWebRTCAnswer, setWebRTCAnswer, enableWebRTC]
   );
 
   const clearPairedResult = useCallback(() => setPairedResult(null), []);
+
+  const getWebRTCService = useCallback(() => webrtcRef.current, []);
+
+  const setPairedResultDirect = useCallback((res) => {
+    setPairedResult(res);
+  }, []);
 
   return (
     <P2PContext.Provider
       value={{
         ready: !!(priv && myPub),
         status, // offline | connecting | online
+        connMode,
         messages,
         typing,
         sendText,
@@ -442,8 +576,17 @@ export function P2PProvider({ children }) {
         pairedResult,
         clearPairedResult,
         startPairing,
+        startPairingWebRTC,
         cancelPairing,
         joinPairing,
+        createWebRTCOffer,
+        createWebRTCAnswer,
+        setWebRTCAnswer,
+        addWebRTCIceCandidate,
+        enableWebRTC,
+        disableWebRTC,
+        getWebRTCService,
+        setPairedResultDirect,
       }}
     >
       {children}

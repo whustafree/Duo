@@ -1,6 +1,7 @@
 import {
   bytesToB64,
   b64ToBytes,
+  bytesToB64url,
   utf8ToBytes,
   bytesToUtf8,
   derivePairingKey,
@@ -175,6 +176,52 @@ export function verifyPairOk(frame, psB64url, expectedPubB64) {
       emoji: obj.emoji || "💞",
       coupleId: obj.coupleId,
     };
+  } catch {
+    return null;
+  }
+}
+
+// ------------------------------------------------------- QR WebRTC (SDP) --
+// Intercambio de SDP FUERA DE BANDA por dos QRs, sin servidor de señalización:
+//   A: duo:webrtc:v1:offer:<pubA b64url>:<sdp b64url>
+//   B: duo:webrtc:v1:answer:<pubB b64url>:<sdp b64url>
+// El SDP (JSON {type, sdp}) viaja en base64url; ni la clave privada ni nada
+// sensible se incluye. La conexión ICE es SOLO STUN (sin TURN).
+
+export const WEBRTC_QR_PREFIX = "duo:webrtc:v1";
+
+export function buildWebRTCOfferQr(pubB64, sdpObj) {
+  const pubUrl = bytesToB64url(b64ToBytes(pubB64));
+  const sdpUrl = bytesToB64url(utf8ToBytes(JSON.stringify(sdpObj)));
+  return `${WEBRTC_QR_PREFIX}:offer:${pubUrl}:${sdpUrl}`;
+}
+
+export function buildWebRTCAnswerQr(pubB64, sdpObj) {
+  const pubUrl = bytesToB64url(b64ToBytes(pubB64));
+  const sdpUrl = bytesToB64url(utf8ToBytes(JSON.stringify(sdpObj)));
+  return `${WEBRTC_QR_PREFIX}:answer:${pubUrl}:${sdpUrl}`;
+}
+
+// Devuelve { kind: "offer"|"answer", pub, sdp } o null si no es un QR WebRTC.
+// No lanza con entradas malformadas: el escáner de QR debe tolerar basura.
+export function parseWebRTCQr(qrText) {
+  const parts = String(qrText || "").split(":");
+  if (
+    parts.length !== 6 ||
+    parts[0] !== "duo" ||
+    parts[1] !== "webrtc" ||
+    parts[2] !== "v1"
+  ) {
+    return null;
+  }
+  const kind = parts[3];
+  if (kind !== "offer" && kind !== "answer") return null;
+  if (!parts[4] || !parts[5]) return null;
+  try {
+    const pub = bytesToB64(b64ToBytes(parts[4]));
+    const sdp = JSON.parse(bytesToUtf8(b64ToBytes(parts[5])));
+    if (!pub || !sdp || typeof sdp.sdp !== "string") return null;
+    return { kind, pub, sdp };
   } catch {
     return null;
   }
