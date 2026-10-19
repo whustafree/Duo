@@ -20,115 +20,156 @@ export const coupleMeta = {
   daysTogether: 610,
 };
 
-export const mockMessages = [
-  {
-    id: "m1",
-    from: "other",
-    text: "Holaa mi amor 😍",
-    time: "20:04",
-    type: "text",
-  },
-  {
-    id: "m2",
-    from: "me",
-    text: "Holaa preciosa, ¿cómo estuvo tu día?",
-    time: "20:05",
-    type: "text",
-  },
-  {
-    id: "m3",
-    from: "other",
-    text: "Largo... pero pensé en ti todo el día 😏",
-    time: "20:06",
-    type: "text",
-  },
-  {
-    id: "m4",
-    from: "other",
-    type: "photo",
-    photoLabel: "foto",
-    time: "20:06",
-  },
-  {
-    id: "m5",
-    from: "me",
-    text: "Uff... me acabas de alegrar la noche 🔥",
-    time: "20:07",
-    type: "text",
-  },
-  {
-    id: "m6",
-    from: "other",
-    text: "¿Jugamos un reto? Tengo ganas 😜",
-    time: "20:08",
-    type: "text",
-  },
-];
+export const mockMessages = [];
 
-// Niveles: 1 = suave, 2 = romántico, 3 = picante, 4 = atrevido
+// ---------------------------------------------------------------------------
+// Juegos pensados para la DISTANCIA: casi todo se cumple por chat, audio, foto
+// o videollamada, para que sirvan aunque cada uno esté en su casa o su país.
+//
+// Niveles (se eligen ANTES de jugar):
+//   1 Suave · 2 Romántico · 3 Picante · 4 Atrevido · 5 Íntimo (lo más hot)
+// ---------------------------------------------------------------------------
+
 export const challengeLevels = [
   { id: 1, name: "Suave", emoji: "🌸", color: "#34D399" },
   { id: 2, name: "Romántico", emoji: "💞", color: "#F472B6" },
   { id: 3, name: "Picante", emoji: "🌶️", color: "#FB7185" },
   { id: 4, name: "Atrevido", emoji: "🔥", color: "#F43F5E" },
+  { id: 5, name: "Íntimo", emoji: "😈", color: "#9F1239" },
 ];
 
+// Ruleta de Retos: retos para hacer cada uno desde su teléfono (a distancia).
 export const challenges = {
   1: [
-    "Dale un abrazo de 20 segundos sin soltar.",
-    "Dile 3 cosas que te enamoran de él/ella.",
-    "Cuéntale tu recuerdo favorito juntos.",
-    "Mírense a los ojos 30 segundos sin hablar.",
-    "Báilen una canción lenta en la sala.",
+    "Cuéntale tu día con un audio de voz, con calma.",
+    "Mándale 3 cosas que te enamoran de él/ella por mensaje.",
+    "Envía el emoji que mejor describa cómo te sientes hoy por tu pareja.",
+    "Cuéntale un recuerdo bonito que tengan juntos.",
+    "Pon su canción favorita y grábate bailando 15 segundos.",
+    "Escribe un piropo y mándalo ahora mismo.",
   ],
   2: [
-    "Dale un beso en la frente y susúrrale algo bonito.",
-    "Masaje de hombros por 2 minutos.",
-    "Escribe un piropo y mándalo al chat ahora mismo.",
-    "Cuéntale un sueño que tengan juntos a futuro.",
-    "Tómense una selfie abrazados para el recuerdo.",
+    "Manda un audio susurrando algo bonito al oído.",
+    "Cuéntale un sueño que quieran cumplir juntos algún día.",
+    "Envía una selfie tuya sonriendo, solo para ella/él.",
+    "Dile en un audio por qué te enamoraste.",
+    "Describe con detalle el próximo abrazo que se darán.",
+    "Mándale un mensaje largo contando lo que más extrañas.",
   ],
   3: [
-    "Beso de 10 segundos donde él/ella elija dónde.",
-    "Susúrrale al oído lo que más te gusta de su cuerpo.",
-    "Quita una prenda a tu elección (o un calcetín 😜).",
-    "Dale un beso en el cuello, lento.",
-    "Describe tu fantasía favorita con detalle.",
+    "Manda un audio con voz sensual leyendo un piropo.",
+    "Envía una foto provocadora (solo para sus ojos 😏).",
+    "Cuéntale en audio lo primero que harás cuando la/lo veas.",
+    "Describe tu fantasía favorita por mensaje.",
+    "Manda un emoji prohibido y explica por qué.",
+    "Susúrrale en audio algo que te encantaría hacerle.",
   ],
   4: [
-    "Beso apasionado de 30 segundos sin tocar los labios con manos.",
-    "Manda una foto sugerente al chat (solo para tus ojos 😏).",
-    "Deja que él/ella te dé una orden… y obedece.",
-    "Reto de 5 minutos: sin hablar, solo lenguaje corporal.",
-    "Elige un lugar de la casa y cumple la fantasía de tu pareja.",
+    "Manda una foto sugerente en ropa interior o recién salido/a de la ducha.",
+    "Grábate un audio describiendo un sueño erótico con ella/él.",
+    "Cuéntale qué te gustaría que te hiciera ahora mismo, sin filtros.",
+    "Envía un video corto (10 s) coqueteando con la cámara.",
+    "Elige una parte de tu cuerpo y mándale una foto sensual.",
+    "Dile por audio una orden que quieras que cumpla cuando se vean.",
+  ],
+  5: [
+    "Manda una foto o video cada vez más provocativo y deja que ella/él pida más.",
+    "Describe por audio, con voz sexy, paso a paso lo que te gustaría hacerle.",
+    "Grábate 30 segundos cumpliendo la fantasía que tu pareja te pida.",
+    "Prohibido escribir con ropa: cuéntale qué llevas puesto (o no) ahora mismo.",
+    "Confiesa tu fantasía más secreta y pídele que te cuente la suya.",
+    "Propón un juego: por cada mensaje que te mande, quítate una prenda en video.",
   ],
 };
 
-export const truths = [
-  "¿Cuál fue tu primer pensamiento cuando me viste?",
-  "¿Qué es lo que más te calienta de mí?",
-  "¿Cuál es tu lugar favorito de mi cuerpo?",
-  "¿Alguna fantasía que no me hayas contado?",
-  "¿Qué gesto mío te derrite?",
-  "¿Cuándo fue la última vez que pensaste en mí de forma... traviesa?",
-];
-
-export const dares = [
-  "Manda un audio susurrando algo provocador.",
-  "Dale un beso donde menos se lo espere.",
-  "Imita tu cara de... ya sabes 😏",
-  "Quítate una prenda por cada mensaje que te haga sonreír.",
-  "Envíale un emoji prohibido y explica por qué.",
-  "Baila 15 segundos de forma insinuante.",
-];
-
-export const diceChallenges = {
-  1: ["Un piropo", "Un masaje de 1 min", "Un abrazo", "Un beso tierno", "Una canción", "Un mensaje dulce"],
-  2: ["Un beso largo", "Un mordisco suave", "Un baile juntos", "Un baile de ojos", "Una confesión", "Un mimo"],
-  3: ["Un beso apasionado", "Susurro al oído", "Masaje sensual", "Foto sugerente", "Reto de 30s", "Ronda de preguntas"],
-  4: ["Carta blanca del otro", "3 minutos sin normas", "Reto sorpresa", "Fantasía en voz alta", "Doble reto", "El/ella decide"],
+// Verdad: preguntas por nivel (a distancia, se responden por chat o audio).
+export const truths = {
+  1: [
+    "¿Cuál fue tu primer pensamiento cuando me viste?",
+    "¿Qué es lo que más te gusta de mi forma de ser?",
+    "¿Qué momento nuestro te hace sonreír siempre?",
+    "¿Qué te gustaría que hiciéramos más seguido juntos?",
+    "¿Qué gesto mío te derrite?",
+  ],
+  2: [
+    "¿Cuándo supiste que me querías de verdad?",
+    "¿Qué es lo que más extrañas de mí cuando no nos vemos?",
+    "¿Qué sueño te gustaría cumplir conmigo?",
+    "¿Qué canción te recuerda a nosotros?",
+    "¿Qué te hace sentir más querido/a?",
+  ],
+  3: [
+    "¿Qué es lo que más te calienta de mí?",
+    "¿Cuál es tu lugar favorito de mi cuerpo?",
+    "¿Cuándo fue la última vez que pensaste en mí de forma... traviesa?",
+    "¿Qué mensaje mío te volvió loco/a?",
+    "¿Qué te gustaría que te susurre al oído?",
+  ],
+  4: [
+    "¿Alguna fantasía que no me hayas contado todavía?",
+    "¿Qué te gustaría que hiciéramos la próxima vez que nos veamos?",
+    "¿Dónde te gustaría que te toque primero?",
+    "¿Qué te imaginas cuando te mando una foto sugerente?",
+    "¿Qué es lo más atrevido que has pensado hacer conmigo?",
+  ],
+  5: [
+    "Cuéntame paso a paso la fantasía que te da más morbo.",
+    "¿Qué te gustaría que te haga una noche entera sin prisa?",
+    "¿Cuál es el lugar más arriesgado donde me has deseado?",
+    "¿Qué te gustaría que te mande ahora mismo por mensaje?",
+    "Si te diera una noche de carta blanca, ¿qué me pedirías?",
+  ],
 };
 
+// Reto: retos por nivel, casi todos por chat/audio/foto/video (a distancia).
+export const dares = {
+  1: [
+    "Manda un audio cantando el estribillo de nuestra canción.",
+    "Envía una foto de algo que te recuerde a mí.",
+    "Escribe un mini poema de 2 líneas y mándalo.",
+    "Grábate mandándome un beso al aire.",
+    "Manda 5 emojis que digan cómo te sientes por mí.",
+  ],
+  2: [
+    "Manda un audio susurrando algo provocador.",
+    "Envía una foto tuya con tu mejor sonrisa.",
+    "Cuéntame por chat qué te gustaría hacer este finde conmigo.",
+    "Dedícame una canción y explica por qué.",
+    "Mándame un mensaje bonito que pueda leer mañana al despertar.",
+  ],
+  3: [
+    "Manda un audio con voz sensual diciéndome un piropo.",
+    "Envía una foto sugerente (tú decides cuánto 😏).",
+    "Describe por chat tu fantasía favorita con detalle.",
+    "Manda un emoji prohibido y explica por qué.",
+    "Baila 15 segundos de forma insinuante y mándame el video.",
+  ],
+  4: [
+    "Manda una foto atrevida en ropa interior o recién duchado/a.",
+    "Grábate un audio erótico describiendo lo que harías conmigo.",
+    "Envía un video corto coqueteando con la cámara.",
+    "Quítate una prenda por cada mensaje que te haga sonreír.",
+    "Dime por audio una orden que quieras que cumpla cuando nos veamos.",
+  ],
+  5: [
+    "Manda un video sensual de 30 segundos solo para mí.",
+    "Descríbeme por audio, con voz sexy, qué me harías ahora mismo.",
+    "Quítate una prenda en video por cada halago que te mande.",
+    "Cuéntame tu fantasía más secreta y hazme cumplir la mía.",
+    "Mándame un audio en plena intimidad dedicándomelo.",
+  ],
+};
+
+// Dados del Deseo: resultados cortos por nivel.
+export const diceChallenges = {
+  1: ["Un piropo", "Un audio dulce", "Un recuerdo bonito", "Una canción", "Un emoji", "Un mensaje de buenos días"],
+  2: ["Un audio susurrado", "Una foto sonriendo", "Un sueño juntos", "Un poema corto", "Una videollamada", "Un «te extraño»"],
+  3: ["Un audio sensual", "Una foto provocadora", "Una fantasía", "Un reto de 30 s en video", "Un emoji prohibido", "Un piropo picante"],
+  4: ["Una foto sugerente", "Un audio erótico", "Un video coqueto", "Una orden para cuando se vean", "Una confesión sin filtros", "3 minutos sin censura"],
+  5: ["Una foto íntima", "Un video sensual", "Una fantasía en detalle", "Quitarse una prenda en video", "Un audio en la cama", "El/ella decide y tú obedeces"],
+};
+
+// Para Conocernos: preguntas que acercan aunque estén lejos.
 export const coupleQuestions = [
   "¿Cuál fue el momento en que supiste que me querías?",
   "Si pudiéramos viajar mañana, ¿a dónde iríamos?",
@@ -138,6 +179,8 @@ export const coupleQuestions = [
   "¿Qué te gustaría que hiciéramos más seguido?",
   "¿Cuál es tu recuerdo favorito de la última semana?",
   "¿Qué te gustaría probar juntos que aún no hemos hecho?",
+  "¿Qué es lo primero que haremos cuando por fin nos veamos?",
+  "¿En qué momento del día piensas más en mí?",
 ];
 
 export const games = [

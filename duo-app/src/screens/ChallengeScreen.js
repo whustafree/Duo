@@ -9,6 +9,7 @@ export default function ChallengeScreen() {
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar style="light" />
       <ChallengeDeck
+        gameId="ruleta"
         title="Ruleta de Retos"
         subtitle="Giren y cumplan el reto del nivel elegido."
         actionLabel="Girar ruleta"

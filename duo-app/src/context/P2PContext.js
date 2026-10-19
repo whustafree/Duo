@@ -23,6 +23,8 @@ import {
   buildMsg,
   buildTyping,
   buildAck,
+  buildGame,
+  readGame,
   splitPhoto,
   PhotoAssembler,
   readMsg,
@@ -33,8 +35,8 @@ import {
   notifyNewMessage,
 } from "../services/notifications";
 
-// Orquesta el chat y el transporte "relay": los dos teléfonos hablan a través
-// de un broker MQTT público que solo hace de cartero. TODO va cifrado de
+// Orquesta el chat, los juegos y el transporte "relay": los dos teléfonos hablan
+// a través de un broker MQTT público que solo hace de cartero. TODO va cifrado de
 // extremo a extremo, así que el broker no puede leer nada.
 //
 //   - Estado de conexión (en línea / conectando / sin conexión).
@@ -42,7 +44,9 @@ import {
 //     guardadas en el propio dispositivo; NUNCA en un servidor).
 //   - Bandeja de salida: lo que no se pudo entregar queda "pendiente" y se
 //     reintenta hasta recibir el ACK de la pareja.
-//   - Vinculación por QR o por código (para pegar), sin estar en la misma red.
+//   - Juegos compartidos: al abrir un juego se sincroniza con la pareja, para
+//     que ambos vean el mismo reto aunque estén lejos.
+//   - Borrado local: historial y fotos se pueden eliminar del dispositivo.
 
 const P2PContext = createContext(null);
 
@@ -55,6 +59,7 @@ function log(...args) {
 }
 
 const RETRY_INTERVAL = 12000;
+const GAME_BEACON_INTERVAL = 6000;
 
 export function P2PProvider({ children }) {
   const { session } = useSession();
@@ -64,6 +69,8 @@ export function P2PProvider({ children }) {
   const [typing, setTyping] = useState(false);
   const [pendingPair, setPendingPair] = useState(null); // {name, emoji, sas, ts}
   const [pairedResult, setPairedResult] = useState(null);
+  const [gameSession, setGameSession] = useState(null); // {gameId, level, prompt, host, ts}
+  const [incomingGame, setIncomingGame] = useState(null); // {gameId, level, ts}
 
   const relayRef = useRef(null);
   const assemblerRef = useRef(new PhotoAssembler());
@@ -75,6 +82,8 @@ export function P2PProvider({ children }) {
   const handleFrameRef = useRef(null);
   const statusRef = useRef("offline");
   const flushRef = useRef(() => {});
+  const gameRef = useRef(null);
+  const sendGameRef = useRef(() => false);
   sessionRef.current = session;
   keysRef.current = keys;
 
@@ -85,6 +94,7 @@ export function P2PProvider({ children }) {
 
   msgsRef.current = messages;
   statusRef.current = status;
+  gameRef.current = gameSession;
 
   const persist = useCallback((rows) => {
     const cid = sessionRef.current?.coupleId;
@@ -163,6 +173,25 @@ export function P2PProvider({ children }) {
     return () => clearInterval(iv);
   }, []);
 
+  // Baliza del juego: si somos los anfitriones, repetimos el estado cada pocos
+  // segundos para que la pareja lo vea aunque se pierda algún mensaje.
+  useEffect(() => {
+    if (!partnerPub) return;
+    const iv = setInterval(() => {
+      const g = gameRef.current;
+      if (g && g.host === "me" && statusRef.current === "online") {
+        sendGameRef.current({
+          k: "sync",
+          gameId: g.gameId,
+          level: g.level,
+          prompt: g.prompt,
+          mode: g.mode,
+        });
+      }
+    }, GAME_BEACON_INTERVAL);
+    return () => clearInterval(iv);
+  }, [partnerPub]);
+
   const appendMessage = useCallback(
     (row) => {
       if (idsRef.current.has(row.id)) return false;
@@ -203,6 +232,117 @@ export function P2PProvider({ children }) {
     return relayRef.current?.send(frame) || false;
   }, []);
 
+  // ----------------------------------------------------------- juegos ------
+  const sendGame = useCallback(
+    (payload) => {
+      if (!priv || !partnerPub) return false;
+      const frame = buildGame(payload, priv, partnerPub);
+      return frame ? sendFrame(frame) : false;
+    },
+    [priv, partnerPub, sendFrame]
+  );
+  sendGameRef.current = sendGame;
+
+  const startGame = useCallback(
+    (gameId, level = 1) => {
+      const s = {
+        gameId,
+        level,
+        prompt: null,
+        mode: null,
+        host: "me",
+        ts: Date.now(),
+      };
+      gameRef.current = s;
+      setGameSession(s);
+      sendGame({ k: "start", gameId, level });
+      return s;
+    },
+    [sendGame]
+  );
+
+  const setGameLevel = useCallback(
+    (level) => {
+      const prev = gameRef.current || {};
+      const s = {
+        ...prev,
+        level,
+        prompt: null,
+        mode: null,
+        host: "me",
+        ts: Date.now(),
+      };
+      gameRef.current = s;
+      setGameSession(s);
+      if (s.gameId) sendGame({ k: "level", gameId: s.gameId, level });
+    },
+    [sendGame]
+  );
+
+  const drawGame = useCallback(
+    (prompt, mode = null) => {
+      const prev = gameRef.current || {};
+      const s = { ...prev, prompt, mode, host: "me", ts: Date.now() };
+      gameRef.current = s;
+      setGameSession(s);
+      sendGame({ k: "draw", gameId: s.gameId, level: s.level, prompt, mode });
+    },
+    [sendGame]
+  );
+
+  const endGame = useCallback(() => {
+    gameRef.current = null;
+    setGameSession(null);
+    sendGame({ k: "end" });
+  }, [sendGame]);
+
+  const clearIncomingGame = useCallback(() => setIncomingGame(null), []);
+
+  const handleGameFrame = useCallback(
+    (frame) => {
+      const g = readGame(frame, priv, partnerPub);
+      if (!g || !g.k) return;
+      if (g.k === "end") {
+        gameRef.current = null;
+        setGameSession(null);
+        return;
+      }
+      const prev =
+        gameRef.current && gameRef.current.gameId === g.gameId
+          ? gameRef.current
+          : null;
+      const s = {
+        gameId: g.gameId || prev?.gameId,
+        level: g.level != null ? g.level : prev?.level || 1,
+        prompt:
+          g.k === "level"
+            ? null
+            : g.prompt !== undefined
+            ? g.prompt
+            : prev?.prompt ?? null,
+        mode:
+          g.k === "level"
+            ? null
+            : g.mode !== undefined
+            ? g.mode
+            : prev?.mode ?? null,
+        host: "them",
+        ts: Date.now(),
+      };
+      if (g.k === "start") {
+        s.prompt = g.prompt ?? null;
+        setIncomingGame({ gameId: s.gameId, level: s.level, ts: Date.now() });
+        notifyIfBackground(
+          `🎮 ${sessionRef.current?.partnerName || "Tu pareja"} quiere jugar contigo`
+        );
+      }
+      gameRef.current = s;
+      setGameSession(s);
+    },
+    [priv, partnerPub, notifyIfBackground]
+  );
+
+  // ------------------------------------------------------------- chat ------
   const sendFrameFor = useCallback(
     (row) => {
       if (!priv || !partnerPub) return false;
@@ -294,6 +434,11 @@ export function P2PProvider({ children }) {
     async (frame) => {
       if (!frame || !priv || !partnerPub) return;
 
+      if (frame.t === "game") {
+        handleGameFrame(frame);
+        return;
+      }
+
       if (frame.t === "msg") {
         const got = readMsg(frame, priv, partnerPub);
         sendFrame(buildAck(frame.id));
@@ -356,9 +501,50 @@ export function P2PProvider({ children }) {
         if (added) notifyIfBackground("📷 Te envió una foto");
       }
     },
-    [priv, partnerPub, appendMessage, markDelivered, notifyIfBackground, sendFrame]
+    [
+      priv,
+      partnerPub,
+      appendMessage,
+      markDelivered,
+      notifyIfBackground,
+      sendFrame,
+      handleGameFrame,
+    ]
   );
   handleFrameRef.current = handleFrame;
+
+  // ---------------------------------------------------- borrar contenido ----
+  const clearHistory = useCallback(async () => {
+    const cid = sessionRef.current?.coupleId;
+    if (cid) {
+      try {
+        await AsyncStorage.removeItem(msgsKey(cid));
+      } catch {}
+    }
+    idsRef.current = new Set();
+    setMessages([]);
+  }, []);
+
+  // Borra las fotos guardadas por Duo en este dispositivo (enviadas y recibidas).
+  const deleteStoredPhotos = useCallback(async () => {
+    try {
+      const dir = FileSystem.documentDirectory;
+      if (!dir) return;
+      const names = await FileSystem.readDirectoryAsync(dir);
+      const mine = names.filter((n) => n.startsWith("duo_"));
+      await Promise.all(
+        mine.map((n) =>
+          FileSystem.deleteAsync(dir + n, { idempotent: true }).catch(() => {})
+        )
+      );
+    } catch {}
+  }, []);
+
+  // Borra TODO el contenido local: historial de mensajes + fotos guardadas.
+  const wipeAllContent = useCallback(async () => {
+    await clearHistory();
+    await deleteStoredPhotos();
+  }, [clearHistory, deleteStoredPhotos]);
 
   const startPairing = useCallback(
     async (name) => {
@@ -431,6 +617,18 @@ export function P2PProvider({ children }) {
         startPairing,
         cancelPairing,
         joinPairing,
+        // juegos
+        gameSession,
+        incomingGame,
+        clearIncomingGame,
+        startGame,
+        setGameLevel,
+        drawGame,
+        endGame,
+        // borrado
+        clearHistory,
+        deleteStoredPhotos,
+        wipeAllContent,
       }}
     >
       {children}

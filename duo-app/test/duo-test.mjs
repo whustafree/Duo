@@ -248,6 +248,34 @@ async function main() {
     const wholeEnv = R.buildEnvelope(sid, msg);
     ok(!wholeEnv.includes("Nos vemos"), "el texto tampoco aparece en el sobre publicado al broker");
 
+    console.log("\n5b) Juegos compartidos (cifrados)");
+    const gamePayload = {
+      k: "draw",
+      gameId: "ruleta",
+      level: 5,
+      prompt: "Manda una foto íntima solo para mí",
+      mode: null,
+    };
+    const gameFrame = P.buildGame(gamePayload, A.privateKeyB64, B.publicKeyB64);
+    const gameRead = P.readGame(gameFrame, B.privateKeyB64, A.publicKeyB64);
+    ok(
+      gameRead && gameRead.prompt === gamePayload.prompt && gameRead.level === 5,
+      "la pareja recibe el estado del juego (nivel y reto)"
+    );
+    ok(
+      P.readGame(gameFrame, X.privateKeyB64, A.publicKeyB64) === null,
+      "un tercero NO puede descifrar el juego"
+    );
+    ok(
+      !JSON.stringify(gameFrame).includes("foto íntima"),
+      "el reto NUNCA viaja en claro por el relay"
+    );
+    ok(
+      P.readGame({ t: "msg", v: "duo-p2p-v1" }, B.privateKeyB64, A.publicKeyB64) ===
+        null,
+      "una trama que no es de juego se ignora"
+    );
+
     console.log("\n6) Fotos troceadas");
     const original = randomBytesLike(140000);
     const encPhoto = C.encryptBytes(original, A.privateKeyB64, B.publicKeyB64);
@@ -327,6 +355,18 @@ async function main() {
     devB.publish(chatT, P.buildAck("m_live"));
     const aAck = devA.received.find((r) => r.frame.t === "ack" && r.frame.id === "m_live");
     ok(!!aAck, "A recibe el ACK de B (mensaje entregado)");
+
+    // Juego compartido: A inicia "Ruleta de Retos" y B lo recibe para verlo.
+    devA.publish(
+      chatT,
+      P.buildGame({ k: "start", gameId: "ruleta", level: 3 }, A.privateKeyB64, B.publicKeyB64)
+    );
+    const bGame = devB.received.find((r) => r.frame.t === "game");
+    const bGameRead = bGame && P.readGame(bGame.frame, B.privateKeyB64, A.publicKeyB64);
+    ok(
+      bGameRead && bGameRead.gameId === "ruleta" && bGameRead.level === 3,
+      "B recibe el juego que inició A (aparece en los dos)"
+    );
 
     // A envía una foto entera; B la reensambla y descifra.
     const encLive = C.encryptBytes(original, A.privateKeyB64, B.publicKeyB64);

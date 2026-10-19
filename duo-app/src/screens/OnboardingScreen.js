@@ -23,6 +23,7 @@ import { useSession } from "../context/SessionContext";
 import { useP2P } from "../context/P2PContext";
 import { emojiForPub, verificationCode } from "../services/cryptocore";
 import { parsePairQr } from "../services/relayproto";
+import { INVITE_MESSAGE } from "../config";
 
 // Vinculación de la pareja: NO hay servidor propio. Cada dispositivo tiene su
 // clave; el vínculo se hace intercambiando un código corto (QR o pegar texto)
@@ -151,6 +152,13 @@ export default function OnboardingScreen({ navigation }) {
     } catch {}
   };
 
+  // Invita a instalar la app (enlace de descarga) a quien todavía no la tiene.
+  const onInvite = async () => {
+    try {
+      await Share.share({ message: INVITE_MESSAGE });
+    } catch {}
+  };
+
   const goBack = () => {
     cancelRef.current = true;
     p2p.cancelPairing();
@@ -218,6 +226,11 @@ export default function OnboardingScreen({ navigation }) {
               Uno crea el vínculo y comparte el código; el otro lo escanea o lo
               pega. No hace falta estar en la misma WiFi.
             </Text>
+            <Pressable onPress={onInvite} style={styles.inviteLink}>
+              <Text style={styles.inviteLinkText}>
+                📲 Enviar el enlace de descarga a mi pareja
+              </Text>
+            </Pressable>
             {ErrorText}
             <Text style={styles.note}>
               🔒 Todo se cifra con vuestras claves: nadie más puede leerlo, ni
@@ -449,6 +462,18 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginTop: spacing.md,
     paddingHorizontal: spacing.lg,
+  },
+  inviteLink: {
+    alignSelf: "center",
+    marginTop: spacing.md,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+  },
+  inviteLinkText: {
+    color: colors.accent,
+    fontSize: 14,
+    fontWeight: "700",
+    textAlign: "center",
   },
   nameInput: {
     marginTop: spacing.lg,

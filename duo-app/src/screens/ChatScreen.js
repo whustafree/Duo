@@ -21,7 +21,8 @@ import Avatar from "../components/Avatar";
 import { useSession } from "../context/SessionContext";
 import { useP2P } from "../context/P2PContext";
 
-// Chat P2P: los mensajes salen cifrados de este teléfono al otro, directamente.
+// Chat cifrado de extremo a extremo: los mensajes salen cifrados de este
+// teléfono y viajan por un relay (broker público) que solo hace de cartero.
 // Si la pareja está desconectada, el mensaje queda guardado aquí (pendiente) y
 // se envía solo en cuanto los dos vuelven a estar conectados.
 
@@ -138,7 +139,16 @@ export default function ChatScreen() {
             {typing ? "escribiendo…" : STATUS_TEXT[status] || STATUS_TEXT.offline}
           </Text>
         </View>
-        <Pressable style={styles.iconBtn}>
+        <Pressable
+          style={styles.iconBtn}
+          onPress={() =>
+            Alert.alert(
+              "Chat privado 🔒",
+              "Tus mensajes van cifrados de extremo a extremo: salen de este teléfono " +
+                "y solo tu pareja puede leerlos. Nadie más puede verlos."
+            )
+          }
+        >
           <Ionicons name="lock-closed" size={18} color={colors.muted} />
         </Pressable>
       </View>
@@ -162,7 +172,7 @@ export default function ChatScreen() {
               <Text style={styles.emptyHint}>
                 {status === "connecting"
                   ? "Buscando a tu pareja… se enviará todo en cuanto esté en línea."
-                  : "Tus mensajes se enviarán solos cuando tu pareja abra la app en la misma WiFi."}
+                  : "Tus mensajes se enviarán solos cuando tu pareja abra la app y tenga Internet."}
               </Text>
             ) : null}
           </View>

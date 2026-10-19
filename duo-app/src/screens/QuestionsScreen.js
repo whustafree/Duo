@@ -9,6 +9,7 @@ export default function QuestionsScreen() {
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar style="light" />
       <ChallengeDeck
+        gameId="preguntas"
         title="Para Conocernos"
         subtitle="Respondan por turnos y escúchense de verdad."
         actionLabel="Nueva pregunta"

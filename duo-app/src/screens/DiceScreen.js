@@ -9,6 +9,7 @@ export default function DiceScreen() {
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar style="light" />
       <ChallengeDeck
+        gameId="dados"
         title="Dados del Deseo"
         subtitle="Dejen que los dados decidan por ustedes."
         actionLabel="Tirar dados"

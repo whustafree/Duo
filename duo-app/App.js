@@ -1,6 +1,11 @@
 import "react-native-gesture-handler";
+import { useEffect } from "react";
 import { View, Text, StyleSheet, ActivityIndicator } from "react-native";
-import { NavigationContainer, DefaultTheme } from "@react-navigation/native";
+import {
+  NavigationContainer,
+  DefaultTheme,
+  createNavigationContainerRef,
+} from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -9,7 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { colors } from "./src/theme";
 import { SessionProvider, useSession } from "./src/context/SessionContext";
 import { E2EProvider } from "./src/context/E2EContext";
-import { P2PProvider } from "./src/context/P2PContext";
+import { P2PProvider, useP2P } from "./src/context/P2PContext";
 import OnboardingScreen from "./src/screens/OnboardingScreen";
 import ChatScreen from "./src/screens/ChatScreen";
 import GamesScreen from "./src/screens/GamesScreen";
@@ -35,6 +40,15 @@ const navTheme = {
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
+
+const navigationRef = createNavigationContainerRef();
+
+const GAME_ROUTES = {
+  verdad: "TruthDare",
+  ruleta: "Challenge",
+  dados: "Dice",
+  preguntas: "Questions",
+};
 
 const TAB_ICONS = {
   Chat: "chatbubbles",
@@ -75,6 +89,18 @@ function MainTabs() {
 
 function Root() {
   const { session, ready } = useSession();
+  const { incomingGame, clearIncomingGame } = useP2P();
+
+  // Cuando la pareja inicia un juego, lo abrimos en este teléfono para que lo
+  // vean los dos a la vez (aunque estén en ciudades distintas).
+  useEffect(() => {
+    if (!incomingGame || !session) return;
+    const route = GAME_ROUTES[incomingGame.gameId];
+    if (route && navigationRef.isReady()) {
+      navigationRef.navigate(route);
+      clearIncomingGame();
+    }
+  }, [incomingGame, session, clearIncomingGame]);
 
   if (!ready) {
     return (
@@ -86,7 +112,7 @@ function Root() {
   }
 
   return (
-    <NavigationContainer theme={navTheme}>
+    <NavigationContainer theme={navTheme} ref={navigationRef}>
       <Stack.Navigator
         initialRouteName={session ? "Main" : "Onboarding"}
         screenOptions={{

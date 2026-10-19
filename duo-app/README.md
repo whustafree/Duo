@@ -1,6 +1,7 @@
 # Duo 💞
 
-App privada para parejas: chat (texto + fotos), juegos y retos para acercarse.
+App privada para parejas: chat (texto + fotos) y **juegos/retos para dos** que se
+juegan **a distancia** y se sincronizan entre los dos teléfonos.
 
 **No hay ningún servidor propio.** Los dos teléfonos se comunican a través de un
 **broker MQTT público y gratuito** que solo hace de cartero; todo lo que viaja va
@@ -17,13 +18,15 @@ cifrado de extremo a extremo.
   solo hace de cartero; nada depende de un backend ni de un servidor de pago.
 - **El broker ve metadatos mínimos**: los temas (hashes que sin las claves no
   revelan nada), el tamaño de los paquetes y los horarios. **Nunca** ve los
-  mensajes ni las fotos, que van cifrados de extremo a extremo.
-- **Cifrado extremo a extremo (E2E)** de textos *y* fotos:
+  mensajes, las fotos ni el estado del juego, que van cifrados de extremo a
+  extremo.
+- **Cifrado extremo a extremo (E2E)** de textos, fotos *y* estado del juego:
   X25519 + HKDF-SHA256 + AES-256-GCM. Aunque alguien capture el tráfico, solo ve
   bytes ilegibles; la clave privada **nunca sale del dispositivo**.
 - **Copia local en cada equipo**: el historial queda guardado en el dispositivo
   (AsyncStorage) y las fotos se descifran y se guardan en el almacenamiento
-  local de la app. Cada uno conserva su propia copia.
+  local de la app. Cada uno conserva su propia copia, que puede **borrar** desde
+  el Perfil (solo la suya).
 - **Código de verificación SAS** de 6 dígitos (idéntico en las dos pantallas)
   al vincular, para asegurar que no te enlazaste con la persona equivocada.
 
@@ -53,11 +56,36 @@ No hace falta estar en la misma red; uno crea el vínculo y el otro se une.
 
 > Solo necesitas Internet en los dos teléfonos (misma WiFi o datos móviles).
 
+## Juegos para dos (a distancia)
+
+- **Juegos compartidos**: cuando uno abre un juego, la pareja recibe la invitación
+  y **la pantalla se abre sola en su teléfono**, así que jugáis a la vez.
+- **Nivel elegido antes de jugar** (y sincronizado): 🌸 Suave · 💞 Romántico ·
+  🌶️ Picante · 🔥 Atrevido · 😈 Íntimo (+18).
+- **Nivel y reto son comunes**: lo que sale en un teléfono es lo mismo en el
+  otro; el botón **«Terminar juego»** acaba la partida para los dos.
+- Los retos están pensados **para la distancia**: se cumplen por chat, audio,
+  foto o videollamada, aunque estéis en ciudades o países distintos.
+- El estado del juego va **cifrado de extremo a extremo** igual que el chat: nadie
+  (ni el broker) sabe a qué jugáis ni qué reto os ha tocado.
+
+## Invitar a tu pareja (si todavía no tiene la app)
+
+- Hay un enlace de descarga estable (`…/releases/latest/download/duo.apk`) que se
+  comparte con un botón desde el onboarding, la pestaña **Juegos** y el **Perfil**
+  («📲 Enviar el enlace de descarga a mi pareja»).
+
+## Borrar contenido
+
+- Desde el **Perfil** puedes **borrar el historial de chat**, **borrar las fotos
+  guardadas** o **borrar todo** (con confirmación). Solo borra **tu copia local**;
+  la de tu pareja no se toca. «Desvincular» también pide confirmación.
+
 ## Desarrollo
 
 ```bash
 npm install
-npm test           # 59 verificaciones del protocolo y del relay (corren en Node)
+npm test           # 64 verificaciones del protocolo y del relay (corren en Node)
 npx expo start     # desarrollo
 ```
 
@@ -70,25 +98,33 @@ npx expo start     # desarrollo
 
 - **GitHub Actions (recomendado)**: cada push a `main` que toque `duo-app/`
   ejecuta `.github/workflows/build-apk.yml` → pruebas + APK como artefacto
-  (`duo-apk`). El artefacto se descarga y se publica a mano en
-  [Releases](https://github.com/whustafree/Duo/releases).
+  (`duo-apk`, con nombre `duo-v<versión>-apk<n>.apk`). El artefacto se descarga
+  y se publica a mano en
+  [Releases](https://github.com/whustafree/Duo/releases), añadiendo también el
+  nombre estable **`duo.apk`** para que el enlace de descarga de la invitación
+  siempre sea válido.
 - **EAS local**: `eas build -p android --profile preview`
 
 ## Estructura relevante
 
 ```
+src/config.js    # enlaces de descarga/invitación (APP_DOWNLOAD_URL)
 src/services/
   polyfills.js   # crypto.getRandomValues para Hermes (se carga primero)
   cryptocore.js  # núcleo criptográfico puro (testeable en Node)
   crypto.js      # guarda/carga el par de claves del dispositivo
-  protocol.js    # tramas, autenticación, emparejamiento, msgs, fotos
+  protocol.js    # tramas, autenticación, emparejamiento, msgs, fotos y juego
   mqttws.js      # cliente MQTT 3.1.1 sobre WebSocket (sin dependencias)
   relayproto.js  # lógica pura del relay: temas, QR v2 y sobre
   relay.js       # transporte relay por broker público
 src/context/
-  P2PContext.js  # transporte relay + historial local + bandeja de salida + fotos
+  P2PContext.js  # transporte relay + historial + bandeja + fotos + juego compartido + borrado
 test/
   duo-test.mjs   # pruebas (npm test)
 ```
 
 Repo: https://github.com/whustafree/Duo
+
+> El APK de cada Release se publica con un nombre **estable `duo.apk`** (junto al
+> nombre con número), así que el enlace de descarga usado por la invitación
+> siempre apunta a la última versión.

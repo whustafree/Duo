@@ -18,17 +18,26 @@ Fecha: 18 de octubre de 2026
   con código de verificación de 6 dígitos.
 - **Funciona siempre y desde cualquier red**: misma WiFi o datos móviles,
   incluido NAT estricto, sin estar juntos, sin abrir puertos y sin pagar nada.
-- **Juegos y retos** para mejorar/acercar la relación, con 4 niveles de intensidad:
-  🌸 Suave · 💞 Romántico · 🌶️ Picante · 🔥 Atrevido.
-- **Cifrado extremo a extremo (E2E)** de textos y fotos: X25519 + HKDF-SHA256 +
-  AES-256-GCM. Lo que viaja por la red son bytes ilegibles; **ni el broker puede
-  leer nada**.
+- **Juegos y retos** para mejorar/acercar la relación, con 5 niveles de
+  intensidad: 🌸 Suave · 💞 Romántico · 🌶️ Picante · 🔥 Atrevido · 😈 Íntimo
+  (+18, el más hot). Los juegos están pensados **para la distancia**: los retos
+  se cumplen por chat, audio, foto o videollamada.
+- **Juegos compartidos**: al abrir un juego se **sincroniza con la pareja** por
+  el mismo canal cifrado, así que la partida (nivel y reto) aparece en los **dos
+  teléfonos** a la vez.
+- **Cifrado extremo a extremo (E2E)** de textos, fotos **y del estado del
+  juego**: X25519 + HKDF-SHA256 + AES-256-GCM. Lo que viaja por la red son bytes
+  ilegibles; **ni el broker puede leer nada** (tampoco a qué jugáis ni el reto).
+- **Invitación con enlace de descarga**: se puede invitar a la pareja aunque
+  todavía no tenga la app (botón en el onboarding, en Juegos y en el Perfil).
+- **Borrado de contenido** local: historial de chat, fotos guardadas o todo, con
+  confirmación (solo borra tu copia; la de tu pareja no se toca).
 - Persistencia de sesión (no hay que revincular cada vez).
 - Notificaciones locales al recibir mensajes en segundo plano.
 
 > Los retos están pensados para **parejas adultas y consentidas**. La app no
-> incluye contenido explícito; el nivel "Atrevido" es una invitación, no contenido
-> gráfico.
+> incluye contenido explícito; los niveles "Atrevido" e "Íntimo" (+18) son una
+> invitación, no contenido gráfico.
 
 ---
 
@@ -44,40 +53,45 @@ duo-app/      → App móvil (React Native + Expo SDK 52)
 ```
 duo-app/
 ├── App.js                  # Navegación (stack + tabs), providers, splash
+│                           #   + navigationRef: abre solo la pantalla del juego
+│                           #     que inicia la pareja
 ├── index.js                # Instala el polyfill de Web Crypto antes que nada
 ├── app.json                # Config Expo (nombre, permisos, plugins, cámara)
 ├── eas.json                # Perfiles de build (APK/AAB)
 ├── babel.config.js
 ├── package.json            # incluye "npm test" → pruebas del protocolo (relay)
 ├── test/
-│   └── duo-test.mjs        # 59 verificaciones (relay + cifrado E2E + bus en memoria)
+│   └── duo-test.mjs        # 64 verificaciones (relay + cifrado E2E + juego + bus en memoria)
 └── src/
     ├── theme.js            # Colores, espaciados, tipografía
-    ├── data/mock.js        # Datos simulados (solo juegos/demo)
+    ├── config.js           # Enlaces públicos (repo, releases, descarga) e invitación
+    ├── data/mock.js        # Datos de juegos/demo; 5 niveles y retos por nivel
     ├── context/
     │   ├── SessionContext.js   # Sesión de la pareja (AsyncStorage)
     │   ├── E2EContext.js       # Claves de cifrado del dispositivo
     │   └── P2PContext.js       # Transporte relay + historial local + bandeja
+    │                           #   + estado del juego compartido + borrado
     ├── services/
     │   ├── polyfills.js        # crypto.getRandomValues para Hermes (nativo)
     │   ├── cryptocore.js       # Núcleo criptográfico PURO (X25519/AES/GCM,
     │   │                       #   coupleId, código SAS, emojis) — testeable en Node
     │   ├── crypto.js           # Guarda/carga el par de claves en AsyncStorage
-    │   ├── protocol.js         # Tramas, auth, emparejamiento, msgs, fotos (PURO)
+    │   ├── protocol.js         # Tramas, auth, emparejamiento, msgs, fotos, game (PURO)
     │   ├── mqttws.js           # Cliente MQTT 3.1.1 sobre WebSocket (sin deps)
     │   ├── relayproto.js       # Lógica PURA del relay: temas, QR v2 y sobre
     │   ├── relay.js            # Transporte relay por broker público (API tipo P2P)
     │   └── notifications.js    # Notificaciones locales
     ├── components/{Avatar,PrimaryButton,ChallengeDeck}.js
+    │                           #   ChallengeDeck: lee/escribe el estado compartido
     └── screens/
-        ├── OnboardingScreen.js # Vincular por QR/código pegado + SAS
+        ├── OnboardingScreen.js # Vincular por QR/código pegado + SAS + invitación
         ├── ChatScreen.js       # Chat + fotos + typing (todo por relay)
-        ├── GamesScreen.js      # Lista de juegos
-        ├── TruthDareScreen.js  # Verdad o Reto
-        ├── ChallengeScreen.js  # Ruleta de Retos
-        ├── DiceScreen.js       # Dados del Deseo
-        ├── QuestionsScreen.js  # Para Conocernos
-        └── ProfileScreen.js    # Perfil + código de verificación + desvincular
+        ├── GamesScreen.js      # Lista de juegos + invitación con enlace
+        ├── TruthDareScreen.js  # Verdad o Reto (estado compartido)
+        ├── ChallengeScreen.js  # Ruleta de Retos (estado compartido)
+        ├── DiceScreen.js       # Dados del Deseo (estado compartido)
+        ├── QuestionsScreen.js  # Para Conocernos (estado compartido)
+        └── ProfileScreen.js    # Perfil + datos reales + borrado + desvincular
 ```
 
 ---
@@ -113,6 +127,22 @@ duo-app/
    recibir el **ACK** de entrega. Así la entrega diferida es fiable aunque el
    otro esté sin conexión un rato.
 
+### Juegos compartidos (a distancia)
+
+1. Cuando uno abre un juego (Verdad o Reto, Ruleta de Retos, Dados del Deseo o
+   Para Conocernos), la app envía un `start` **cifrado** con el identificador del
+   juego y el nivel; la pareja lo recibe y su teléfono **abre esa pantalla solo**
+   (el juego aparece en los dos a la vez).
+2. **El nivel se elige antes de jugar** (5 niveles: 🌸 Suave · 💞 Romántico ·
+   🌶️ Picante · 🔥 Atrevido · 😈 Íntimo +18) y se **sincroniza** con la pareja.
+3. Al pedir el siguiente reto, el estado del juego (`draw`: nivel + reto + modo)
+   viaja cifrado igual que el chat, de modo que **los dos ven el mismo reto**.
+4. El anfitrión **reenvía el estado cada 6 s** (una "baliza") para que la pareja
+   lo vea aunque se pierda algún mensaje. El botón **«Terminar juego»** termina
+   la partida para los dos y vuelve atrás.
+5. Todo el estado del juego va **cifrado E2E**: el broker nunca sabe a qué jugáis
+   ni qué reto os ha tocado.
+
 ### Requisitos de uso
 
 - **Solo necesitas Internet** (misma WiFi o datos móviles, también con NAT
@@ -135,7 +165,7 @@ duo-app/
 ```bash
 cd duo-app
 npm install
-npm test           # pruebas del protocolo y del relay (59 verificaciones)
+npm test           # pruebas del protocolo y del relay (64 verificaciones)
 npx expo start     # escanea el QR con Expo Go
 ```
 
@@ -153,9 +183,18 @@ npx expo start     # escanea el QR con Expo Go
 cd duo-app && eas build -p android --profile preview
 ```
 
+> La **Release** en GitHub incluye el APK con un nombre **estable `duo.apk`**
+> (además del nombre con número), de modo que el enlace
+> `https://github.com/whustafree/Duo/releases/latest/download/duo.apk` (usado por
+> la invitación dentro de la app) siempre apunta a la última versión.
+
 ---
 
 ## 5. Estado actual (qué ya está hecho)
+
+Versión actual: **0.5.0** (versionCode 5). Los juegos son **compartidos** y van
+cifrados, hay borrado de contenido y enlace de invitación; la Release **v0.5.0**
+está pendiente de compilar y publicar.
 
 - [x] Maqueta completa de UI (todas las pantallas).
 - [x] **Sin servidor propio ni de pago**: chat/fotos/vinculación a través de un
@@ -171,14 +210,30 @@ cd duo-app && eas build -p android --profile preview
 - [x] Chat + "escribiendo…" + acks y **bandeja de salida**: lo no entregado se
       **reintenta cada 12 s** hasta recibir el ACK.
 - [x] Fotos: cifradas en el dispositivo y troceadas por el canal.
+- [x] **Juegos compartidos** (v0.5.0): el estado del juego (`gameSession`) se
+      sincroniza con la pareja por el relay cifrado (marco `game`); al iniciar un
+      juego se envía `start` y la app **abre sola** esa pantalla en el otro
+      teléfono. Nivel (`level`) y reto (`draw`) son comunes; el anfitrión
+      **reenvía el estado cada 6 s** (baliza). Botón **«Terminar juego»** termina
+      la partida para los dos.
+- [x] **5 niveles** de juegos/retos (🌸 Suave · 💞 Romántico · 🌶️ Picante ·
+      🔥 Atrevido · 😈 Íntimo +18), elegidos **antes de jugar** y sincronizados;
+      `challenges`/`diceChallenges`/`truths`/`dares` indexados por nivel. Retos
+      **pensados para la distancia** (chat, audio, foto o videollamada).
+- [x] **Invitación con enlace de descarga** (`src/config.js`): botón para
+      compartir el enlace del APK en el onboarding, en Juegos y en el Perfil.
+- [x] **Borrado de contenido** (con confirmación, solo copia local): historial de
+      chat (`clearHistory`), fotos guardadas (`deleteStoredPhotos`) y todo
+      (`wipeAllContent`); «Desvincular» también pide confirmación.
 - [x] Persistencia de sesión + **historial local cifrado en origen** (AsyncStorage).
 - [x] Notificaciones locales.
-- [x] Cifrado E2E **completo** de textos y fotos (X25519 + AES-256-GCM).
+- [x] Cifrado E2E **completo** de textos, fotos y estado del juego (X25519 + AES-256-GCM).
 - [x] Polyfill de `crypto.getRandomValues` con RNG nativo (expo-crypto).
-- [x] Tests del protocolo (`duo-app/test/duo-test.mjs`, **59 verificaciones**):
+- [x] Tests del protocolo (`duo-app/test/duo-test.mjs`, **64 verificaciones**):
       identidad/SAS, encuadre, auth E2E, QR v2, temas/sobre del relay, mensajes,
-      fotos y una sesión completa sobre un "bus" en memoria que imita al broker
-      (comprueba que el eco propio se ignora y que un intruso no puede descifrar).
+      fotos, **cifrado del estado del juego** (un tercero no lo descifra y el reto
+      no viaja en claro; la pareja recibe el juego iniciado) y una sesión completa
+      sobre un "bus" en memoria que imita al broker.
 - [x] Repo en GitHub: https://github.com/whustafree/Duo
 - [x] Build automático de APK con GitHub Actions (`.github/workflows/build-apk.yml`).
 
@@ -189,10 +244,14 @@ cd duo-app && eas build -p android --profile preview
 - [ ] Probar el flujo completo en **dos celulares reales** (crear/compartir/
       escanear/pegar código, mensajes, fotos, entrega diferida con reintentos)
       por el relay.
-- [ ] Publicar la **Release v0.4.0** (app 0.4.0 / versionCode 4; pendiente de
-      compilar y subir el APK).
+- [ ] Probar en **dos teléfonos** los **juegos compartidos** (que la pantalla se
+      abra sola en la pareja, que el nivel y el reto se sincronicen y que
+      «Terminar juego» cierre en los dos).
+- [ ] Probar en **dos teléfonos** el **borrado de contenido** (historial, fotos y
+      todo) y el **enlace de invitación** (descarga del APK `duo.apk`).
+- [ ] Publicar la **Release v0.5.0** (juegos compartidos + borrado + invitación +
+      nivel Íntimo; app 0.5.0 / versionCode 5; pendiente de compilar y subir el APK).
 - [ ] Más juegos y retos; editar/crear retos propios.
-- [ ] Borrar historial / fotos desde la app.
 - [ ] Notificaciones push reales (hoy solo locales).
 - [ ] Publicar en Play Store (firma de release + AAB).
 
@@ -210,6 +269,10 @@ cd duo-app && eas build -p android --profile preview
   `hash` es sha256 → 22 hex, así que sin las claves no se adivinan.
 - `newArchEnabled: false` en `app.json` (configuración actual del proyecto; ya
   **no** responde a módulos nativos, que fueron retirados).
+- `src/config.js` centraliza los enlaces públicos (repo, releases y descarga) y el
+  texto de invitación. El APK de cada Release se publica además con el nombre
+  **estable `duo.apk`**, así el enlace
+  `…/releases/latest/download/duo.apk` siempre es válido.
 - Hermes no expone `crypto.getRandomValues`: `src/services/polyfills.js` lo
   instala con el RNG nativo **antes** de cualquier uso de `@noble/*`.
 
@@ -221,13 +284,15 @@ cd duo-app && eas build -p android --profile preview
   mensajes solo pasan por un **broker MQTT público y gratuito** que actúa como
   cartero y **no puede leer el contenido** (va cifrado E2E). El broker **sí ve
   metadatos mínimos**: los temas (que son hashes y no revelan datos sin las
-  claves), el tamaño de los paquetes y los horarios; **nunca** los mensajes ni
-  las fotos.
-- Los textos **y las fotos** van cifrados E2E en el propio canal: aunque alguien
-  capture el tráfico, solo ve bytes aleatorios.
+  claves), el tamaño de los paquetes y los horarios; **nunca** los mensajes, las
+  fotos **ni el estado del juego** (a qué jugáis o el reto).
+- Los textos, **las fotos y el estado del juego** van cifrados E2E en el propio
+  canal: aunque alguien capture el tráfico, solo ve bytes aleatorios.
 - La clave privada **nunca sale** del dispositivo; el código de vinculación solo
   contiene la clave **pública** + un secreto de emparejamiento de un solo uso.
 - Cada dispositivo guarda su **copia local** del historial y de las fotos
-  descifradas (almacenamiento de la app). Si se pierde el equipo, se pierden
-  esas claves; la pareja conserva su propia copia.
+  descifradas (almacenamiento de la app). Se pueden **borrar** desde el Perfil
+  (historial, fotos o todo); el borrado afecta **solo a tu copia**, nunca a la de
+  tu pareja. Si se pierde el equipo, se pierden esas claves; la pareja conserva su
+  propia copia.
 - El código SAS de 6 dígitos protege contra emparejamientos equivocados.

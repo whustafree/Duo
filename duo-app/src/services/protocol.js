@@ -214,6 +214,38 @@ export function readMsg(frame, myPrivB64, peerPubB64) {
   }
 }
 
+// ------------------------------------------------------------------ juegos --
+// El estado del juego (qué juego, nivel y reto actual) viaja CIFRADO con la
+// clave de la pareja, igual que el chat: el broker nunca sabe a qué juegan ni
+// qué reto les ha tocado. Así el juego aparece en los dos teléfonos a la vez.
+
+export function buildGame(payload, myPrivB64, peerPubB64) {
+  const enc = encryptText(JSON.stringify(payload), myPrivB64, peerPubB64);
+  if (enc.error) return null;
+  return {
+    t: "game",
+    v: PROTOCOL_VERSION,
+    ts: Date.now(),
+    nonceB64: enc.nonceB64,
+    ctB64: enc.ciphertextB64,
+  };
+}
+
+export function readGame(frame, myPrivB64, peerPubB64) {
+  if (!frame || frame.t !== "game" || frame.v !== PROTOCOL_VERSION) return null;
+  const plain = decryptText(
+    { ciphertextB64: frame.ctB64, nonceB64: frame.nonceB64 },
+    myPrivB64,
+    peerPubB64
+  );
+  if (!plain) return null;
+  try {
+    return JSON.parse(plain);
+  } catch {
+    return null;
+  }
+}
+
 export function buildTyping(isTyping) {
   return { t: "typing", v: PROTOCOL_VERSION, typing: !!isTyping };
 }
