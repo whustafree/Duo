@@ -2,7 +2,7 @@
   "expo": {
     "name": "Duo",
     "slug": "duo-app",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "orientation": "portrait",
     "scheme": "duoapp",
     "userInterfaceStyle": "dark",
@@ -14,23 +14,17 @@
     "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.duo.app",
-      "infoPlist": {
-        "NSLocalNetworkUsageDescription":
-          "Duo usa la red local para conectar directamente tu teléfono con el de tu pareja, sin servidores.",
-        "NSBonjourServices": ["_duo._tcp"]
-      }
+      "bundleIdentifier": "com.duo.app"
     },
     "android": {
       "package": "com.duo.app",
-      "versionCode": 3,
+      "versionCode": 4,
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.CAMERA",
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.ACCESS_NETWORK_STATE",
-        "android.permission.ACCESS_WIFI_STATE",
-        "android.permission.CHANGE_WIFI_MULTICAST_STATE"
+        "android.permission.ACCESS_WIFI_STATE"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#0E0B14"

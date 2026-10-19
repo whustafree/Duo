@@ -2,22 +2,25 @@
 
 App privada para parejas: chat (texto + fotos), juegos y retos para acercarse.
 
-**No hay ningún servidor.** Los dos teléfonos se conectan **directamente entre
-sí** y todo lo que viaja va cifrado de extremo a extremo.
+**No hay ningún servidor propio.** Los dos teléfonos se comunican a través de un
+**broker MQTT público y gratuito** que solo hace de cartero; todo lo que viaja va
+cifrado de extremo a extremo.
 
-- **Ruta preferente**: misma **WiFi** → TCP directo + descubrimiento mDNS.
-- **Sin WiFi común**: **WebRTC STUN-only** con intercambio de SDP **fuera de
-  banda por 2 QRs** (Offer/Answer). Sin TURN, sin servidor de señalización.
+- **Funciona siempre y desde cualquier red**: misma WiFi o datos móviles, NAT
+  estricto incluido, sin estar juntos ni abrir puertos.
+- **Sin servidor propio ni de pago**: el broker es público y gratuito, y como
+  todo va cifrado E2E no puede leer nada.
 
 ## Privacidad (lo principal)
 
-- **Sin backend**: los mensajes solo van del teléfono de uno al del otro.
-  Nada pasa por internet ni por terceros.
-- **WebRTC solo con STUN**: STUN únicamente ayuda a descubrir la dirección
-  pública; no ve el contenido (va cifrado E2E) y no hay servidor de relevo.
+- **Sin servidor propio**: los mensajes pasan por un **broker MQTT público** que
+  solo hace de cartero; nada depende de un backend ni de un servidor de pago.
+- **El broker ve metadatos mínimos**: los temas (hashes que sin las claves no
+  revelan nada), el tamaño de los paquetes y los horarios. **Nunca** ve los
+  mensajes ni las fotos, que van cifrados de extremo a extremo.
 - **Cifrado extremo a extremo (E2E)** de textos *y* fotos:
-  X25519 + HKDF-SHA256 + AES-256-GCM. Si alguien captura el tráfico de la WiFi
-  solo ve bytes ilegibles; la clave privada **nunca sale del dispositivo**.
+  X25519 + HKDF-SHA256 + AES-256-GCM. Aunque alguien capture el tráfico, solo ve
+  bytes ilegibles; la clave privada **nunca sale del dispositivo**.
 - **Copia local en cada equipo**: el historial queda guardado en el dispositivo
   (AsyncStorage) y las fotos se descifran y se guardan en el almacenamiento
   local de la app. Cada uno conserva su propia copia.
@@ -26,59 +29,49 @@ sí** y todo lo que viaja va cifrado de extremo a extremo.
 
 ## Cómo funciona la conexión
 
-- Cada teléfono levanta un **servidor TCP propio** (puerto `47777`) y se
-  anuncia en la red local por **mDNS** (`_duo._tcp`).
-- El dispositivo con la clave pública "menor" marca la conexión saliente
-  (regla determinista: ambos calculan lo mismo, nunca se duplica el enlace).
-- Al conectar, se autentican mutuamente con E2E. Tras eso, todo va cifrado.
+- Cada teléfono se conecta a un **broker MQTT público gratuito** (se prueban 3 en
+  orden hasta que uno responde) y se suscribe al **tema de chat de la pareja**,
+  que es un hash que nadie puede adivinar sin las claves.
+- Cada mensaje se publica envuelto en un sobre `{s, f}` y **cifrado E2E**; el
+  sobre permite **ignorar el eco propio** que devuelve el broker.
 - Si la pareja está desconectada, los mensajes quedan **pendientes aquí** y se
-  envían solos en cuanto los dos vuelven a estar en línea.
+  **reintentan cada 12 s** hasta recibir el ACK de entrega.
 
-## Conectar por Internet (sin servidor)
+## Vinculación (una sola vez)
 
-Si no están en la misma WiFi, activa **«Conectar por Internet»** en la pantalla
-de bienvenida. Es WebRTC **solo STUN**, con el SDP intercambiado fuera de banda
-por dos QRs (no hay servidor de señalización):
-
-1. **A**: *Crear vínculo por Internet* → muestra un **Offer QR**.
-2. **B**: *Escanear el Offer* → apunta la cámara → muestra un **Answer QR** y el
-   **código SAS**.
-3. **A**: *Escanear el Answer* → se abre el DataChannel cifrado.
-4. Si en ~18 s no hay ruta directa (NAT estricto), la app indica el **fallback**:
-   activar un **punto de acceso (Hotspot)** en uno de los dos y conectar el otro.
-
-> No se usa **TURN** ni relay: si el NAT lo impide, no hay conexión directa y se
-> ofrece el atajo por Hotspot.
-
-## Vinculación por WiFi (una sola vez)
+No hace falta estar en la misma red; uno crea el vínculo y el otro se une.
 
 1. En el primer arranque, cada uno escribe su nombre.
-2. **Teléfono A**: toca *Crear vínculo* → aparece un **QR** con su clave
-   pública + IP + puerto + un secreto de un solo uso.
-3. **Teléfono B**: toca *Escanear el QR de mi pareja* → apunta la cámara.
-4. Ambas pantallas muestran el **mismo código de 6 dígitos**: si coincide,
-   A acepta la alerta y quedan vinculados. Las claves privadas nunca salen
-   de cada dispositivo.
+2. **Teléfono A**: toca *Crear vínculo* → aparece un **QR corto** con su clave
+   pública + un secreto de un solo uso, y un botón **«📤 Compartir el código»**
+   (para enviarlo, p. ej., por WhatsApp).
+3. **Teléfono B**: toca *Escanear el QR de mi pareja* **o** *Pegar un código* →
+   apunta la cámara al QR o pega el código recibido.
+4. Ambas pantallas muestran el **mismo código de 6 dígitos**: si coincide, A
+   acepta la alerta de *Solicitud de vínculo* y quedan vinculados. Las claves
+   privadas nunca salen de cada dispositivo.
 
-> Requisito de la ruta WiFi: ambos en la **misma red** y con la **app abierta**.
+> Solo necesitas Internet en los dos teléfonos (misma WiFi o datos móviles).
 
 ## Desarrollo
 
 ```bash
 npm install
-npm test           # 48 verificaciones del protocolo P2P (corren en Node)
-npx expo start     # solo para desarrollo con módulos JS
+npm test           # 59 verificaciones del protocolo y del relay (corren en Node)
+npx expo start     # desarrollo
 ```
 
-> `react-native-tcp-socket`, `react-native-zeroconf` y `react-native-webrtc`
-> son **módulos nativos**: para probar la conexión real se necesita un
-> development build o el APK (Expo Go no los incluye).
+> El transporte por relay usa el **WebSocket global** (presente en React Native /
+> Hermes) y el cliente MQTT es propio y **sin dependencias nativas**, así que ya
+> no hacen falta módulos nativos de red. Para probar el flujo completo se
+> recomienda igualmente un development build o el APK.
 
 ### Generar el APK
 
 - **GitHub Actions (recomendado)**: cada push a `main` que toque `duo-app/`
   ejecuta `.github/workflows/build-apk.yml` → pruebas + APK como artefacto
-  (`duo-apk`) y en [Releases](https://github.com/whustafree/Duo/releases).
+  (`duo-apk`). El artefacto se descarga y se publica a mano en
+  [Releases](https://github.com/whustafree/Duo/releases).
 - **EAS local**: `eas build -p android --profile preview`
 
 ## Estructura relevante
@@ -89,13 +82,13 @@ src/services/
   cryptocore.js  # núcleo criptográfico puro (testeable en Node)
   crypto.js      # guarda/carga el par de claves del dispositivo
   protocol.js    # tramas, autenticación, emparejamiento, msgs, fotos
-                 #   + QRs WebRTC Offer/Answer
-  p2p.js         # transporte TCP directo + descubrimiento mDNS
-  webrtc.js      # WebRTC STUN-only (datachannel "duo-data")
+  mqttws.js      # cliente MQTT 3.1.1 sobre WebSocket (sin dependencias)
+  relayproto.js  # lógica pura del relay: temas, QR v2 y sobre
+  relay.js       # transporte relay por broker público
 src/context/
-  P2PContext.js  # conexión + historial local + bandeja de salida + fotos
+  P2PContext.js  # transporte relay + historial local + bandeja de salida + fotos
 test/
-  p2p-test.mjs   # pruebas (npm test)
+  duo-test.mjs   # pruebas (npm test)
 ```
 
 Repo: https://github.com/whustafree/Duo

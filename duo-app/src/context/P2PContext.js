@@ -9,7 +9,7 @@ import {
 import { AppState } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
-import { P2P } from "../services/p2p";
+import { Relay } from "../services/relay";
 import { useSession } from "./SessionContext";
 import { useE2E } from "./E2EContext";
 import {
@@ -18,8 +18,6 @@ import {
   bytesToB64,
   b64ToBytes,
   randomId,
-  verificationCode,
-  deriveCoupleId,
 } from "../services/cryptocore";
 import {
   buildMsg,
@@ -28,25 +26,23 @@ import {
   splitPhoto,
   PhotoAssembler,
   readMsg,
-  FrameParser,
-  buildWebRTCOfferQr,
-  buildWebRTCAnswerQr,
-  parseWebRTCQr,
 } from "../services/protocol";
 import {
   configureNotifications,
   requestNotificationPermission,
   notifyNewMessage,
 } from "../services/notifications";
-import { WebRTCService } from "../services/webrtc";
 
-// Orquesta la conexión P2P y el chat local:
-//  - Estado de conexión (en línea / conectando / sin conexión).
-//  - Historial local en AsyncStorage (solo texto descifrado y rutas de fotos
-//    guardadas en el propio dispositivo; NUNCA en un servidor).
-//  - Bandeja de salida: lo que no se pudo enviar queda "pendiente" y se envía
-//    solo en cuanto los dos teléfonos vuelven a estar conectados.
-//  - Vinculación por QR (crear / escanear).
+// Orquesta el chat y el transporte "relay": los dos teléfonos hablan a través
+// de un broker MQTT público que solo hace de cartero. TODO va cifrado de
+// extremo a extremo, así que el broker no puede leer nada.
+//
+//   - Estado de conexión (en línea / conectando / sin conexión).
+//   - Historial local en AsyncStorage (solo texto descifrado y rutas de fotos
+//     guardadas en el propio dispositivo; NUNCA en un servidor).
+//   - Bandeja de salida: lo que no se pudo entregar queda "pendiente" y se
+//     reintenta hasta recibir el ACK de la pareja.
+//   - Vinculación por QR o por código (para pegar), sin estar en la misma red.
 
 const P2PContext = createContext(null);
 
@@ -54,11 +50,11 @@ function msgsKey(coupleId) {
   return `duo.msgs.${coupleId}`;
 }
 
-const ADDR_KEY = "duo.partner.addr";
-
 function log(...args) {
   if (global.__DUO_DEBUG) console.log("[p2pctx]", ...args);
 }
+
+const RETRY_INTERVAL = 12000;
 
 export function P2PProvider({ children }) {
   const { session } = useSession();
@@ -66,21 +62,19 @@ export function P2PProvider({ children }) {
   const [status, setStatus] = useState("offline");
   const [messages, setMessages] = useState([]);
   const [typing, setTyping] = useState(false);
-  const [pendingPair, setPendingPair] = useState(null); // {name, emoji, sas}
+  const [pendingPair, setPendingPair] = useState(null); // {name, emoji, sas, ts}
   const [pairedResult, setPairedResult] = useState(null);
-  const [connMode, setConnMode] = useState("lan"); // lan | webrtc
 
-  const p2pRef = useRef(null);
+  const relayRef = useRef(null);
   const assemblerRef = useRef(new PhotoAssembler());
   const idsRef = useRef(new Set());
   const msgsRef = useRef([]);
   const typingTimer = useRef(null);
   const sessionRef = useRef(session);
   const keysRef = useRef(keys);
-  const webrtcRef = useRef(null);
-  const webrtcModeRef = useRef(false);
-  const webrtcParserRef = useRef(new FrameParser());
   const handleFrameRef = useRef(null);
+  const statusRef = useRef("offline");
+  const flushRef = useRef(() => {});
   sessionRef.current = session;
   keysRef.current = keys;
 
@@ -90,6 +84,7 @@ export function P2PProvider({ children }) {
   const myPub = keys?.publicKeyB64;
 
   msgsRef.current = messages;
+  statusRef.current = status;
 
   const persist = useCallback((rows) => {
     const cid = sessionRef.current?.coupleId;
@@ -97,25 +92,6 @@ export function P2PProvider({ children }) {
     AsyncStorage.setItem(msgsKey(cid), JSON.stringify(rows.slice(-300))).catch(
       () => {}
     );
-  }, []);
-
-  const addrKey = (cid) => `${ADDR_KEY}.${cid}`;
-
-  const getSavedAddr = useCallback(async () => {
-    const cid = sessionRef.current?.coupleId;
-    if (!cid) return null;
-    try {
-      const raw = await AsyncStorage.getItem(addrKey(cid));
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const saveAddr = useCallback((addr) => {
-    const cid = sessionRef.current?.coupleId;
-    if (!cid) return;
-    AsyncStorage.setItem(addrKey(cid), JSON.stringify(addr)).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -145,40 +121,27 @@ export function P2PProvider({ children }) {
     configureNotifications();
     requestNotificationPermission();
 
-    const p2p = p2pRef.current || new P2P();
-    p2pRef.current = p2p;
-    p2p.onEvent((type, data) => {
-      if (type === "status") {
-        // En modo WebRTC el estado lo manda el DataChannel; no dejar que el
-        // sondeo LAN (que sigue activo como ruta preferente) lo pise.
-        if (webrtcModeRef.current && webrtcRef.current?.isConnected()) return;
-        setStatus(data);
-      } else if (type === "session") {
-        flushOutbox();
-        setConnMode("lan");
-        webrtcModeRef.current = false;
-        if (webrtcRef.current) {
-          try { webrtcRef.current.cleanup(); } catch {}
-          webrtcRef.current = null;
-        }
-      } else if (type === "frame") handleFrame(data);
+    const relay = relayRef.current || new Relay();
+    relayRef.current = relay;
+    relay.onEvent((type, data) => {
+      if (type === "status") setStatus(data);
+      else if (type === "session") flushRef.current();
+      else if (type === "frame") handleFrame(data);
       else if (type === "pair-request")
         setPendingPair({ ...data, ts: Date.now() });
       else if (type === "paired") setPairedResult(data);
     });
 
     if (priv && myPub) {
-      p2p.configure({
+      relay.configure({
         keys,
         partnerPub,
         myName: session?.myName,
         myEmoji: session?.myEmoji,
-        getSavedAddr,
-        saveAddr,
       });
-      p2p.start();
+      relay.start();
     } else {
-      p2p.stop();
+      relay.stop();
     }
 
     return () => {};
@@ -187,9 +150,17 @@ export function P2PProvider({ children }) {
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (st) => {
-      if (st === "active") p2pRef.current?.wake();
+      if (st === "active") relayRef.current?.wake();
     });
     return () => sub.remove();
+  }, []);
+
+  // Reintento periódico mientras estamos en línea: entrega diferida fiable.
+  useEffect(() => {
+    const iv = setInterval(() => {
+      if (statusRef.current === "online") flushRef.current();
+    }, RETRY_INTERVAL);
+    return () => clearInterval(iv);
   }, []);
 
   const appendMessage = useCallback(
@@ -228,20 +199,9 @@ export function P2PProvider({ children }) {
     }
   }, []);
 
-  const sendFrame = useCallback(
-    (frame) => {
-      if (webrtcModeRef.current && webrtcRef.current && webrtcRef.current.isConnected()) {
-        try {
-          webrtcRef.current.send(JSON.stringify(frame));
-          return true;
-        } catch (e) {
-          return false;
-        }
-      }
-      return p2pRef.current?.send(frame);
-    },
-    []
-  );
+  const sendFrame = useCallback((frame) => {
+    return relayRef.current?.send(frame) || false;
+  }, []);
 
   const sendFrameFor = useCallback(
     (row) => {
@@ -284,6 +244,7 @@ export function P2PProvider({ children }) {
       sendFrameFor(row);
     }
   }, [sendFrameFor]);
+  flushRef.current = flushOutbox;
 
   const sendText = useCallback(
     (text) => {
@@ -324,83 +285,14 @@ export function P2PProvider({ children }) {
 
   const sendTyping = useCallback(
     (isTyping) => {
-      const frame = buildTyping(isTyping);
-      sendFrame(frame);
+      sendFrame(buildTyping(isTyping));
     },
     [sendFrame]
   );
 
-  const enableWebRTC = useCallback(() => {
-    webrtcModeRef.current = true;
-    setConnMode("webrtc");
-    setStatus("connecting");
-  }, []);
-
-  const disableWebRTC = useCallback(() => {
-    webrtcModeRef.current = false;
-    setConnMode("lan");
-    if (webrtcRef.current) {
-      try { webrtcRef.current.cleanup(); } catch {}
-      webrtcRef.current = null;
-    }
-    // Devolver el estado al que reporta el transporte LAN.
-    setStatus(p2pRef.current?.status || "offline");
-  }, []);
-
-  // Datachannel → tramas. Recibe string (JSON) o bytes; se reusa FrameParser
-  // para tolerar fragmentación (mismo encuadre que TCP).
-  const onWebRTCData = useCallback((data) => {
-    try {
-      if (typeof data === "string") {
-        try {
-          handleFrameRef.current?.(JSON.parse(data));
-        } catch {}
-        return;
-      }
-      const frames = webrtcParserRef.current.feed(new Uint8Array(data));
-      for (const f of frames) handleFrameRef.current?.(f);
-    } catch (e) {}
-  }, []);
-
-  const onWebRTCState = useCallback((state) => {
-    if (!webrtcModeRef.current) return;
-    if (state === "connected" || state === "completed") setStatus("online");
-    else if (state === "failed" || state === "closed") setStatus("connecting");
-    else if (state === "disconnected") setStatus("connecting");
-  }, []);
-
-  const ensureWebRTCService = useCallback(() => {
-    if (!webrtcRef.current) {
-      webrtcRef.current = new WebRTCService();
-      webrtcRef.current.onData(onWebRTCData);
-      webrtcRef.current.onStateChange(onWebRTCState);
-    }
-  }, [onWebRTCData, onWebRTCState]);
-
-  const createWebRTCOffer = useCallback(async () => {
-    ensureWebRTCService();
-    return await webrtcRef.current.createOffer();
-  }, [ensureWebRTCService]);
-
-  const createWebRTCAnswer = useCallback(async (offer) => {
-    ensureWebRTCService();
-    return await webrtcRef.current.createAnswer(offer);
-  }, [ensureWebRTCService]);
-
-  const setWebRTCAnswer = useCallback(async (answer) => {
-    if (!webrtcRef.current) return;
-    await webrtcRef.current.setAnswer(answer);
-    enableWebRTC();
-  }, [enableWebRTC]);
-
-  const addWebRTCIceCandidate = useCallback(async (candidate) => {
-    if (!webrtcRef.current) return;
-    await webrtcRef.current.addIceCandidate(candidate);
-  }, []);
-
   const handleFrame = useCallback(
     async (frame) => {
-      if (!priv || !partnerPub) return;
+      if (!frame || !priv || !partnerPub) return;
 
       if (frame.t === "msg") {
         const got = readMsg(frame, priv, partnerPub);
@@ -470,101 +362,62 @@ export function P2PProvider({ children }) {
 
   const startPairing = useCallback(
     async (name) => {
-      const p2p = p2pRef.current;
-      if (!p2p || !priv || !myPub) throw new Error("La app aún no está lista.");
-      p2p.configure({
+      const relay = relayRef.current;
+      if (!relay || !priv || !myPub) throw new Error("La app aún no está lista.");
+      relay.configure({
         keys: keysRef.current,
         partnerPub: null,
         myName: name,
         myEmoji: sessionRef.current?.myEmoji,
-        getSavedAddr,
-        saveAddr,
       });
-      return p2p.startPairing({ name, emoji: sessionRef.current?.myEmoji });
+      relay.start();
+      return relay.startPairing({
+        name,
+        emoji: sessionRef.current?.myEmoji,
+      });
     },
-    [priv, myPub, getSavedAddr, saveAddr]
+    [priv, myPub]
   );
 
-  const startPairingWebRTC = useCallback(
-    async (name) => {
-      if (!priv || !myPub) throw new Error("La app aún no está lista.");
-      const offer = await createWebRTCOffer();
-      return { qr: buildWebRTCOfferQr(myPub, offer), pub: myPub };
+  const joinPairing = useCallback(
+    async (qr) => {
+      const relay = relayRef.current;
+      if (!relay || !priv || !myPub) throw new Error("La app aún no está lista.");
+      relay.configure({
+        keys: keysRef.current,
+        partnerPub: null,
+        myName: sessionRef.current?.myName,
+        myEmoji: sessionRef.current?.myEmoji,
+      });
+      relay.start();
+      return relay.joinPairing(qr);
     },
-    [priv, myPub, createWebRTCOffer]
+    [priv, myPub]
   );
-
-  const cancelPairing = useCallback(() => {
-    p2pRef.current?.cancelPairing();
-    setPendingPair(null);
-  }, []);
 
   const acceptPairing = useCallback(() => {
-    const ok = p2pRef.current?.acceptPairing() || false;
+    const ok = relayRef.current?.acceptPairing() || false;
     if (ok) setPendingPair(null);
     return ok;
   }, []);
 
   const rejectPairing = useCallback(() => {
-    p2pRef.current?.rejectPairing();
+    relayRef.current?.rejectPairing();
     setPendingPair(null);
   }, []);
 
-  const joinPairing = useCallback(
-    async (qr, name) => {
-      const webrtcQr = parseWebRTCQr(qr);
-      if (webrtcQr && webrtcQr.kind === "offer") {
-        // B escaneó el Offer de A: calcula el Answer y su propio QR.
-        const answer = await createWebRTCAnswer(webrtcQr.sdp);
-        // B ya está en modo WebRTC: al abrirse el DataChannel podrá enviar.
-        enableWebRTC();
-        const answerQr = buildWebRTCAnswerQr(myPub, answer);
-        const sas = verificationCode(myPub, webrtcQr.pub);
-        const coupleId = deriveCoupleId(myPub, webrtcQr.pub);
-        return {
-          mode: "webrtc-answer",
-          qr: answerQr,
-          sas,
-          partnerPub: webrtcQr.pub,
-          coupleId,
-        };
-      }
-      if (webrtcQr && webrtcQr.kind === "answer") {
-        // A escaneó el Answer de B: cierra el handshake SDP.
-        await setWebRTCAnswer(webrtcQr.sdp);
-        const sas = verificationCode(myPub, webrtcQr.pub);
-        const coupleId = deriveCoupleId(myPub, webrtcQr.pub);
-        return { mode: "webrtc-connected", partnerPub: webrtcQr.pub, coupleId, sas };
-      }
-      const p2p = p2pRef.current;
-      if (!p2p || !priv || !myPub) throw new Error("La app aún no está lista.");
-      p2p.configure({
-        keys: keysRef.current,
-        partnerPub: null,
-        myName: name || sessionRef.current?.myName,
-        myEmoji: sessionRef.current?.myEmoji,
-        getSavedAddr,
-        saveAddr,
-      });
-      return p2p.joinPairing(qr);
-    },
-    [priv, myPub, getSavedAddr, saveAddr, createWebRTCAnswer, setWebRTCAnswer, enableWebRTC]
-  );
+  const cancelPairing = useCallback(() => {
+    relayRef.current?.cancelPairing();
+    setPendingPair(null);
+  }, []);
 
   const clearPairedResult = useCallback(() => setPairedResult(null), []);
-
-  const getWebRTCService = useCallback(() => webrtcRef.current, []);
-
-  const setPairedResultDirect = useCallback((res) => {
-    setPairedResult(res);
-  }, []);
 
   return (
     <P2PContext.Provider
       value={{
         ready: !!(priv && myPub),
         status, // offline | connecting | online
-        connMode,
         messages,
         typing,
         sendText,
@@ -576,17 +429,8 @@ export function P2PProvider({ children }) {
         pairedResult,
         clearPairedResult,
         startPairing,
-        startPairingWebRTC,
         cancelPairing,
         joinPairing,
-        createWebRTCOffer,
-        createWebRTCAnswer,
-        setWebRTCAnswer,
-        addWebRTCIceCandidate,
-        enableWebRTC,
-        disableWebRTC,
-        getWebRTCService,
-        setPairedResultDirect,
       }}
     >
       {children}

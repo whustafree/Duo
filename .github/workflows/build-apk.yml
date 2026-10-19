@@ -37,7 +37,7 @@ jobs:
         working-directory: duo-app
         run: npm ci
 
-      - name: Pruebas del protocolo P2P
+      - name: Pruebas de Duo (protocolo + relay)
         working-directory: duo-app
         run: npm test
 
