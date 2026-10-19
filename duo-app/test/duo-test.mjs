@@ -23,10 +23,12 @@ const SVC = join(__dirname, "..", "src", "services");
 const CORE = "cryptocore";
 const PROTO = "protocol";
 const RELAY = "relayproto";
+const VERSION = "version";
 const TMP = {
   [CORE]: join(SVC, `.tmp-test-${CORE}.mjs`),
   [PROTO]: join(SVC, `.tmp-test-${PROTO}.mjs`),
   [RELAY]: join(SVC, `.tmp-test-${RELAY}.mjs`),
+  [VERSION]: join(SVC, `.tmp-test-${VERSION}.mjs`),
 };
 
 let passed = 0;
@@ -50,6 +52,7 @@ function loadPureModules() {
   writeFileSync(TMP[CORE], readFileSync(join(SVC, `${CORE}.js`), "utf8"));
   writeFileSync(TMP[PROTO], rewrite(readFileSync(join(SVC, `${PROTO}.js`), "utf8")));
   writeFileSync(TMP[RELAY], rewrite(readFileSync(join(SVC, `${RELAY}.js`), "utf8")));
+  writeFileSync(TMP[VERSION], readFileSync(join(SVC, `${VERSION}.js`), "utf8"));
 }
 
 function cleanup() {
@@ -121,6 +124,7 @@ async function main() {
     const C = await import(pathToFileURL(TMP[CORE]).href);
     const P = await import(pathToFileURL(TMP[PROTO]).href);
     const R = await import(pathToFileURL(TMP[RELAY]).href);
+    const V = await import(pathToFileURL(TMP[VERSION]).href);
 
     console.log("\n1) Identidad y claves");
     const A = C.generateKeyPair();
@@ -276,6 +280,50 @@ async function main() {
       "una trama que no es de juego se ignora"
     );
 
+    const replyFrame = P.buildGame(
+      {
+        k: "reply",
+        gameId: "ruleta",
+        text: "acepto tu reto",
+        ts: 1700000000000,
+      },
+      A.privateKeyB64,
+      B.publicKeyB64
+    );
+    const replyRead = P.readGame(replyFrame, B.privateKeyB64, A.publicKeyB64);
+    ok(
+      replyRead && replyRead.k === "reply" && replyRead.text === "acepto tu reto",
+      "la respuesta dentro del juego llega a la pareja"
+    );
+    ok(
+      !JSON.stringify(replyFrame).includes("acepto tu reto"),
+      "la respuesta NUNCA viaja en claro"
+    );
+    ok(
+      P.readGame(replyFrame, X.privateKeyB64, A.publicKeyB64) === null,
+      "un tercero NO puede leer la respuesta del juego"
+    );
+    const syncFrame = P.buildGame(
+      {
+        k: "sync",
+        gameId: "ruleta",
+        level: 3,
+        prompt: "reto",
+        mode: null,
+        replies: [{ from: "me", text: "hola", ts: 1 }],
+      },
+      A.privateKeyB64,
+      B.publicKeyB64
+    );
+    const syncRead = P.readGame(syncFrame, B.privateKeyB64, A.publicKeyB64);
+    ok(
+      syncRead &&
+        Array.isArray(syncRead.replies) &&
+        syncRead.replies.length === 1 &&
+        syncRead.replies[0].text === "hola",
+      "el estado sincronizado incluye el hilo de respuestas"
+    );
+
     console.log("\n6) Fotos troceadas");
     const original = randomBytesLike(140000);
     const encPhoto = C.encryptBytes(original, A.privateKeyB64, B.publicKeyB64);
@@ -299,6 +347,101 @@ async function main() {
       }
     }
     ok(same, "los bytes descifrados son idénticos al original");
+
+    console.log("\n6b) Audio y vídeo troceados (file-*)");
+    const avOriginal = randomBytesLike(120000);
+    const encAV = C.encryptBytes(avOriginal, A.privateKeyB64, B.publicKeyB64);
+    ok(!!encAV, "archivo de audio/vídeo cifrado");
+    const audioFrames = P.splitFile(
+      "m_audio",
+      "audio",
+      "m4a",
+      encAV.nonceB64,
+      encAV.cipherB64,
+      48000
+    );
+    ok(
+      audioFrames[0].t === "file-meta" &&
+        audioFrames[0].kind === "audio" &&
+        audioFrames[0].ext === "m4a",
+      "meta del audio: lleva tipo y extensión"
+    );
+    ok(
+      audioFrames.length > 2 &&
+        audioFrames
+          .slice(1)
+          .every((f, i) => f.t === "file-chunk" && f.i === i),
+      "trozos de audio ordenados"
+    );
+    const avAssembler = new P.PhotoAssembler();
+    let avDone = null;
+    for (const f of audioFrames) {
+      const r = avAssembler.accept(f);
+      if (r) avDone = r;
+    }
+    ok(
+      avDone && avDone.kind === "audio" && avDone.ext === "m4a",
+      "audio reensamblado conserva tipo y extensión"
+    );
+    const avDec = C.decryptBytes(
+      avDone.cipherB64,
+      avDone.nonceB64,
+      B.privateKeyB64,
+      A.publicKeyB64
+    );
+    let avSame = !!avDec && avDec.length === avOriginal.length;
+    if (avSame) {
+      for (let i = 0; i < avOriginal.length; i++) {
+        if (avOriginal[i] !== avDec[i]) {
+          avSame = false;
+          break;
+        }
+      }
+    }
+    ok(avSame, "bytes de audio idénticos tras descifrar");
+    const videoFrames = P.splitFile(
+      "m_video",
+      "video",
+      "mp4",
+      encAV.nonceB64,
+      encAV.cipherB64,
+      48000
+    );
+    const vAssembler = new P.PhotoAssembler();
+    let vDone = null;
+    for (const f of videoFrames) {
+      const r = vAssembler.accept(f);
+      if (r) vDone = r;
+    }
+    ok(
+      vDone && vDone.kind === "video" && vDone.ext === "mp4",
+      "vídeo reensamblado conserva tipo y extensión"
+    );
+    const defAssembler = new P.PhotoAssembler();
+    const defFrames = [
+      {
+        t: "file-meta",
+        id: "m_def",
+        kind: "video",
+        nonceB64: encAV.nonceB64,
+        chunks: 1,
+      },
+      { t: "file-chunk", id: "m_def", i: 0, d: encAV.cipherB64 },
+    ];
+    let defDone = null;
+    for (const f of defFrames) {
+      const r = defAssembler.accept(f);
+      if (r) defDone = r;
+    }
+    ok(
+      defDone && defDone.ext === "mp4",
+      "sin extensión en la meta se deduce del tipo"
+    );
+    ok(
+      P.splitPhoto("m_legacy", encAV.nonceB64, encAV.cipherB64, 48000).length >
+        2,
+      "el troceado de fotos sigue funcionando igual"
+    );
 
     console.log("\n7) Sesión completa por el relay (bus en memoria)");
     const bus = makeBus();
@@ -397,6 +540,64 @@ async function main() {
     ok(
       !xMsg || P.readMsg(xMsg.frame, X.privateKeyB64, A.publicKeyB64) === null,
       "pero el intruso NO puede descifrar el chat"
+    );
+
+    console.log("\n8) Aviso de actualizaciones (comparación de versiones)");
+    ok(V.isNewer("v0.6.0", "0.5.0"), "detecta una versión más nueva");
+    ok(!V.isNewer("v0.5.0", "0.5.0"), "la misma versión NO es actualización");
+    ok(!V.isNewer("v0.4.9", "0.5.0"), "una versión antigua NO se avisa");
+    ok(V.isNewer("v0.10.0", "0.9.9"), "compara bien 0.10 frente a 0.9");
+    ok(V.isNewer("1.0.0", "0.99.99"), "compara bien el salto de mayor");
+    const pv = V.parseVersion("v1.2.3-beta");
+    ok(pv[0] === 1 && pv[1] === 2 && pv[2] === 3, "lee versiones con sufijo");
+
+    console.log("\n9) Contenido de los juegos (≥20 por nivel)");
+    const DATA = join(__dirname, "..", "src", "data");
+    const loadPool = (file, names) => {
+      const src = readFileSync(join(DATA, file), "utf8");
+      const body = src.replace(/^export const /gm, "const ");
+      return new Function(`${body}\nreturn { ${names.join(", ")} };`)();
+    };
+    const pools = [
+      ["pool-retos.js", "challenges"],
+      ["pool-truths.js", "truths"],
+      ["pool-dares.js", "dares"],
+      ["pool-dados.js", "diceChallenges"],
+      ["pool-preguntas.js", "coupleQuestions"],
+    ];
+    for (const [file, name] of pools) {
+      let obj = null;
+      try {
+        obj = loadPool(file, [name])[name];
+      } catch (e) {
+        ok(false, `${file} se puede cargar (${e.message})`);
+        continue;
+      }
+      const keys = obj ? Object.keys(obj).sort() : [];
+      ok(keys.join(",") === "1,2,3,4,5", `${file}: niveles 1..5`);
+      const counts = keys.map((k) =>
+        Array.isArray(obj[k]) ? obj[k].length : 0
+      );
+      ok(
+        counts.length === 5 && counts.every((c) => c >= 20),
+        `${file}: ≥20 por nivel (${counts.join("/")})`
+      );
+      const all = [].concat(...keys.map((k) => obj[k] || []));
+      ok(
+        all.length === new Set(all).size,
+        `${file}: sin repetir (${all.length} ítems únicos)`
+      );
+      ok(
+        all.every((s) => typeof s === "string" && s.trim().length > 0),
+        `${file}: todos son textos`
+      );
+    }
+    const mockSrc = readFileSync(join(DATA, "mock.js"), "utf8");
+    ok(
+      pools.every(([file]) =>
+        mockSrc.includes(`"./${file.replace(/\.js$/, "")}"`)
+      ),
+      "mock.js reexporta los 5 pools"
     );
 
     console.log(`\nResultado: ${passed} ok, ${failed} fallos`);

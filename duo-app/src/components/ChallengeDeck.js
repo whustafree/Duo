@@ -6,6 +6,7 @@ import { colors, radius, spacing } from "../theme";
 import { challengeLevels } from "../data/mock";
 import { useP2P } from "../context/P2PContext";
 import PrimaryButton from "./PrimaryButton";
+import GameThread from "./GameThread";
 
 // Mazo de retos COMPARTIDO: el nivel y el reto se sincronizan con la pareja por
 // el relay, así los dos ven lo mismo aunque estén en ciudades distintas.
@@ -118,6 +119,8 @@ export default function ChallengeDeck({
           {current || "Presiona el botón para empezar…"}
         </Text>
       </View>
+
+      <GameThread />
 
       <PrimaryButton
         title={current ? `${actionLabel} de nuevo` : actionLabel}

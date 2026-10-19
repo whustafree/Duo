@@ -15,6 +15,7 @@ import { colors } from "./src/theme";
 import { SessionProvider, useSession } from "./src/context/SessionContext";
 import { E2EProvider } from "./src/context/E2EContext";
 import { P2PProvider, useP2P } from "./src/context/P2PContext";
+import UpdateModal from "./src/components/UpdateModal";
 import OnboardingScreen from "./src/screens/OnboardingScreen";
 import ChatScreen from "./src/screens/ChatScreen";
 import GamesScreen from "./src/screens/GamesScreen";
@@ -112,6 +113,7 @@ function Root() {
   }
 
   return (
+    <>
     <NavigationContainer theme={navTheme} ref={navigationRef}>
       <Stack.Navigator
         initialRouteName={session ? "Main" : "Onboarding"}
@@ -154,6 +156,8 @@ function Root() {
         />
       </Stack.Navigator>
     </NavigationContainer>
+      <UpdateModal />
+    </>
   );
 }
 

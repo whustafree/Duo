@@ -285,6 +285,34 @@ export function splitPhoto(id, nonceB64, cipherB64, chunkSize = PHOTO_CHUNK) {
   return frames;
 }
 
+// Mismo troceado para AUDIO y VÍDEO (y también fotos): cada archivo lleva su
+// tipo y su extensión para poder reproducirlo/reproducirlo en el otro teléfono.
+export function splitFile(id, kind, ext, nonceB64, cipherB64, chunkSize = PHOTO_CHUNK) {
+  const total = Math.max(1, Math.ceil(cipherB64.length / chunkSize));
+  const frames = [
+    {
+      t: "file-meta",
+      v: PROTOCOL_VERSION,
+      id,
+      kind,
+      ext,
+      ts: Date.now(),
+      nonceB64,
+      chunks: total,
+    },
+  ];
+  for (let i = 0, idx = 0; i < cipherB64.length; i += chunkSize, idx++) {
+    frames.push({
+      t: "file-chunk",
+      v: PROTOCOL_VERSION,
+      id,
+      i: idx,
+      d: cipherB64.slice(i, i + chunkSize),
+    });
+  }
+  return frames;
+}
+
 // Recolector del lado receptor: alimentado con las tramas que llegan,
 // devuelve el ciphertext completo cuando la foto está entera.
 export class PhotoAssembler {
@@ -293,15 +321,19 @@ export class PhotoAssembler {
   }
 
   accept(frame) {
-    if (frame.t === "photo-meta") {
+    const isMeta = frame.t === "photo-meta" || frame.t === "file-meta";
+    const isChunk = frame.t === "photo-chunk" || frame.t === "file-chunk";
+    if (isMeta) {
       this.pending.set(frame.id, {
         nonceB64: frame.nonceB64,
+        kind: frame.kind || "photo",
+        ext: frame.ext || null,
         total: frame.chunks,
         parts: [],
       });
       return null;
     }
-    if (frame.t === "photo-chunk") {
+    if (isChunk) {
       const state = this.pending.get(frame.id);
       if (!state) return null;
       state.parts[frame.i] = frame.d;
@@ -311,7 +343,15 @@ export class PhotoAssembler {
         if (typeof state.parts[i] !== "string") return null;
       }
       this.pending.delete(frame.id);
-      return { id: frame.id, nonceB64: state.nonceB64, cipherB64: state.parts.join("") };
+      return {
+        id: frame.id,
+        kind: state.kind || "photo",
+        ext:
+          state.ext ||
+          (state.kind === "audio" ? "m4a" : state.kind === "video" ? "mp4" : "jpg"),
+        nonceB64: state.nonceB64,
+        cipherB64: state.parts.join(""),
+      };
     }
     return null;
   }

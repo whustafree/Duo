@@ -10,12 +10,14 @@ import {
   Platform,
   Image,
   Alert,
+  Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
+import { Audio, Video, ResizeMode } from "expo-av";
 import { colors, radius, spacing } from "../theme";
 import Avatar from "../components/Avatar";
 import { useSession } from "../context/SessionContext";
@@ -35,21 +37,106 @@ function timeOf(ts) {
 
 function MessageBubble({ item }) {
   const mine = item.from === "me";
+  const [sound, setSound] = useState(null);
+  const [playing, setPlaying] = useState(false);
+  const [videoOpen, setVideoOpen] = useState(false);
+
+  useEffect(
+    () => () => {
+      if (sound) sound.unloadAsync().catch(() => {});
+    },
+    [sound]
+  );
+
+  // Nota de voz: reproducir / pausar.
+  const toggleAudio = async () => {
+    try {
+      if (sound) {
+        const st = await sound.getStatusAsync();
+        if (st.isLoaded && st.isPlaying) {
+          await sound.pauseAsync();
+          setPlaying(false);
+        } else if (st.isLoaded) {
+          await sound.replayAsync();
+          setPlaying(true);
+        }
+        return;
+      }
+      const s = new Audio.Sound();
+      await s.loadAsync({ uri: item.uri });
+      s.setOnPlaybackStatusUpdate((st) => {
+        if (st.isLoaded && !st.isPlaying) setPlaying(false);
+      });
+      await s.playAsync();
+      setSound(s);
+      setPlaying(true);
+    } catch {
+      Alert.alert("No se pudo reproducir", "Inténtalo otra vez.");
+    }
+  };
+
   return (
     <View style={[styles.row, mine ? styles.rowMe : styles.rowOther]}>
       <View style={[styles.bubble, mine ? styles.bubbleMe : styles.bubbleOther]}>
         {item.kind === "photo" ? (
           <Image source={{ uri: item.uri }} style={styles.photo} />
-        ) : (
+        ) : null}
+        {item.kind === "audio" ? (
+          <Pressable style={styles.mediaRow} onPress={toggleAudio}>
+            <Ionicons
+              name={playing ? "pause-circle" : "play-circle"}
+              size={34}
+              color={mine ? colors.white : colors.primary}
+            />
+            <View style={styles.wave} />
+            <Text style={[styles.mediaText, mine && { color: colors.white }]}>
+              Nota de voz
+            </Text>
+          </Pressable>
+        ) : null}
+        {item.kind === "video" ? (
+          <Pressable
+            style={styles.videoThumb}
+            onPress={() => setVideoOpen(true)}
+          >
+            <Ionicons name="play-circle" size={44} color={colors.white} />
+            <Text style={styles.videoText}>Vídeo · toca para ver</Text>
+          </Pressable>
+        ) : null}
+        {!item.kind || item.kind === "text" ? (
           <Text style={[styles.msgText, mine && styles.msgTextMe]}>
             {item.text}
           </Text>
-        )}
+        ) : null}
         <Text style={[styles.time, mine ? styles.timeMe : styles.timeOther]}>
           {timeOf(item.ts)}
           {item.pending ? " ⏳" : ""}
         </Text>
       </View>
+      {videoOpen ? (
+        <Modal
+          visible
+          transparent
+          animationType="fade"
+          onRequestClose={() => setVideoOpen(false)}
+        >
+          <View style={styles.videoBack}>
+            <Pressable
+              style={styles.videoClose}
+              onPress={() => setVideoOpen(false)}
+            >
+              <Ionicons name="close" size={30} color={colors.white} />
+            </Pressable>
+            <Video
+              source={{ uri: item.uri }}
+              useNativeControls
+              shouldPlay
+              resizeMode={ResizeMode.CONTAIN}
+              style={styles.videoFull}
+            />
+          </View>
+        </Modal>
+      ) : null}
     </View>
   );
 }
@@ -62,9 +149,21 @@ const STATUS_TEXT = {
 
 export default function ChatScreen() {
   const { session } = useSession();
-  const { status, messages, typing, sendText, sendPhoto, sendTyping } = useP2P();
+  const {
+    status,
+    messages,
+    typing,
+    sendText,
+    sendPhoto,
+    sendAudio,
+    sendVideo,
+    sendTyping,
+  } = useP2P();
 
   const [text, setText] = useState("");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [recording, setRecording] = useState(null);
+  const [recSecs, setRecSecs] = useState(0);
   const listRef = useRef(null);
 
   const partnerName = session?.partnerName || "Mi Amor";
@@ -92,7 +191,20 @@ export default function ChatScreen() {
     scrollDown();
   };
 
+  // Reducir antes de enviar: así el teléfono viejo también lo procesa rápido
+  // (y se cifra igual de bien antes de salir de aquí).
+  const sendImage = async (src) => {
+    const resized = await ImageManipulator.manipulateAsync(
+      src,
+      [{ resize: { width: 1280 } }],
+      { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
+    );
+    await sendPhoto(resized.uri);
+    scrollDown();
+  };
+
   const pickPhoto = async () => {
+    setMenuOpen(false);
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) {
       Alert.alert("Permiso necesario", "Habilita el acceso a tus fotos.");
@@ -103,19 +215,147 @@ export default function ChatScreen() {
       quality: 1,
     });
     if (result.canceled) return;
-    const src = result.assets[0].uri;
     try {
-      // Reducir antes de enviar: viaja por la red local, pero así el teléfono
-      // viejo también lo procesa rápido (y se cifra igual).
-      const resized = await ImageManipulator.manipulateAsync(
-        src,
-        [{ resize: { width: 1280 } }],
-        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
-      );
-      await sendPhoto(resized.uri);
-      scrollDown();
+      await sendImage(result.assets[0].uri);
     } catch (e) {
       Alert.alert("No se pudo enviar la foto", e?.message || "");
+    }
+  };
+
+  // Foto con la cámara del propio móvil.
+  const takePhoto = async () => {
+    setMenuOpen(false);
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert("Permiso necesario", "Habilita la cámara para hacer fotos.");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 1,
+    });
+    if (result.canceled) return;
+    try {
+      await sendImage(result.assets[0].uri);
+    } catch (e) {
+      Alert.alert("No se pudo enviar la foto", e?.message || "");
+    }
+  };
+
+  const mb = (bytes) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+
+  // Los vídeos van troceados como las fotos; avisamos si pesa mucho porque
+  // un archivo grande puede tardar bastante por el relay público.
+  const sendVideoUri = async (uri, fileSize) => {
+    if (fileSize && fileSize > 6 * 1024 * 1024) {
+      Alert.alert(
+        "Vídeo pesado",
+        `Pesa ${mb(fileSize)}. Se enviará igual, pero puede tardar y gastar datos. ¿Seguro?`,
+        [
+          { text: "Cancelar", style: "cancel" },
+          {
+            text: "Enviar",
+            onPress: async () => {
+              try {
+                await sendVideo(uri);
+                scrollDown();
+              } catch (e) {
+                Alert.alert("No se pudo enviar el vídeo", e?.message || "");
+              }
+            },
+          },
+        ]
+      );
+      return;
+    }
+    await sendVideo(uri);
+    scrollDown();
+  };
+
+  const takeVideo = async () => {
+    setMenuOpen(false);
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert("Permiso necesario", "Habilita la cámara para grabar vídeo.");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+      videoMaxDuration: 20,
+    });
+    if (result.canceled) return;
+    const a = result.assets[0];
+    try {
+      await sendVideoUri(a.uri, a.fileSize);
+    } catch (e) {
+      Alert.alert("No se pudo enviar el vídeo", e?.message || "");
+    }
+  };
+
+  const pickGalleryVideo = async () => {
+    setMenuOpen(false);
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+    });
+    if (result.canceled) return;
+    const a = result.assets[0];
+    try {
+      await sendVideoUri(a.uri, a.fileSize);
+    } catch (e) {
+      Alert.alert("No se pudo enviar el vídeo", e?.message || "");
+    }
+  };
+
+  const fmtSecs = (s) =>
+    `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(
+      2,
+      "0"
+    )}`;
+
+  const startRecording = async () => {
+    setMenuOpen(false);
+    try {
+      const perm = await Audio.requestPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert(
+          "Permiso necesario",
+          "Habilita el micrófono para grabar notas de voz."
+        );
+        return;
+      }
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
+      const rec = new Audio.Recording();
+      await rec.prepareToRecordAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      );
+      rec.setProgressUpdateInterval(500);
+      rec.setOnRecordingStatusUpdate((st) =>
+        setRecSecs(Math.floor((st.durationMillis || 0) / 1000))
+      );
+      await rec.startRecording();
+      setRecording(rec);
+    } catch (e) {
+      Alert.alert("No se pudo grabar", e?.message || "");
+    }
+  };
+
+  const stopRecording = async (sendIt) => {
+    const rec = recording;
+    setRecording(null);
+    if (!rec) return;
+    try {
+      await rec.stopAndUnloadAsync();
+      const uri = rec.getURI();
+      setRecSecs(0);
+      if (sendIt && uri) {
+        await sendAudio(uri);
+        scrollDown();
+      }
+    } catch (e) {
+      Alert.alert("No se pudo guardar la nota de voz", e?.message || "");
     }
   };
 
@@ -183,25 +423,63 @@ export default function ChatScreen() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
       >
-        <View style={styles.inputBar}>
-          <Pressable style={styles.attachBtn} onPress={pickPhoto}>
-            <Ionicons name="image" size={24} color={colors.muted} />
-          </Pressable>
-          <TextInput
-            value={text}
-            onChangeText={handleTyping}
-            placeholder="Escribe algo..."
-            placeholderTextColor={colors.muted}
-            style={styles.input}
-            multiline
-          />
-          <Pressable
-            onPress={send}
-            style={[styles.sendBtn, !text.trim() && { opacity: 0.5 }]}
-          >
-            <Ionicons name="send" size={18} color={colors.white} />
-          </Pressable>
-        </View>
+        {menuOpen ? (
+          <View style={styles.menu}>
+            {[
+              { icon: "camera", label: "Hacer una foto", fn: takePhoto },
+              { icon: "images", label: "Foto de la galería", fn: pickPhoto },
+              { icon: "videocam", label: "Grabar un vídeo (20 s)", fn: takeVideo },
+              { icon: "film", label: "Vídeo de la galería", fn: pickGalleryVideo },
+              { icon: "mic", label: "Grabar una nota de voz", fn: startRecording },
+            ].map((o) => (
+              <Pressable key={o.icon} style={styles.menuItem} onPress={o.fn}>
+                <Ionicons name={o.icon} size={22} color={colors.primary} />
+                <Text style={styles.menuText}>{o.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+        {recording ? (
+          <View style={styles.inputBar}>
+            <Text style={styles.recText}>🎙 Grabando… {fmtSecs(recSecs)}</Text>
+            <Pressable
+              style={styles.recCancel}
+              onPress={() => stopRecording(false)}
+            >
+              <Text style={styles.recCancelText}>Cancelar</Text>
+            </Pressable>
+            <Pressable style={styles.sendBtn} onPress={() => stopRecording(true)}>
+              <Ionicons name="send" size={18} color={colors.white} />
+            </Pressable>
+          </View>
+        ) : (
+          <View style={styles.inputBar}>
+            <Pressable
+              style={styles.attachBtn}
+              onPress={() => setMenuOpen((v) => !v)}
+            >
+              <Ionicons
+                name={menuOpen ? "close" : "add-circle"}
+                size={26}
+                color={colors.muted}
+              />
+            </Pressable>
+            <TextInput
+              value={text}
+              onChangeText={handleTyping}
+              placeholder="Escribe algo..."
+              placeholderTextColor={colors.muted}
+              style={styles.input}
+              multiline
+            />
+            <Pressable
+              onPress={send}
+              style={[styles.sendBtn, !text.trim() && { opacity: 0.5 }]}
+            >
+              <Ionicons name="send" size={18} color={colors.white} />
+            </Pressable>
+          </View>
+        )}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -263,6 +541,74 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   attachBtn: { padding: spacing.sm, marginBottom: 2 },
+  menu: {
+    backgroundColor: colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingHorizontal: spacing.sm,
+    paddingTop: spacing.xs,
+  },
+  menuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+  },
+  menuText: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: "600",
+    marginLeft: spacing.md,
+  },
+  mediaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 4,
+  },
+  wave: {
+    width: 64,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: "rgba(255,255,255,0.55)",
+    marginHorizontal: spacing.sm,
+  },
+  mediaText: { color: colors.text, fontSize: 14, fontWeight: "600" },
+  videoThumb: {
+    width: 200,
+    height: 140,
+    borderRadius: radius.md,
+    backgroundColor: "#2A1F3B",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  videoText: {
+    color: colors.white,
+    fontSize: 13,
+    marginTop: 6,
+    fontWeight: "600",
+  },
+  videoBack: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.94)",
+    justifyContent: "center",
+  },
+  videoFull: { width: "100%", height: "70%" },
+  videoClose: {
+    position: "absolute",
+    top: 52,
+    right: 18,
+    zIndex: 2,
+    padding: 8,
+  },
+  recText: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: "700",
+    marginLeft: spacing.sm,
+  },
+  recCancel: { padding: spacing.sm, marginRight: spacing.sm },
+  recCancelText: { color: colors.muted, fontSize: 14, fontWeight: "600" },
   input: {
     flex: 1,
     maxHeight: 110,

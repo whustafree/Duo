@@ -6,6 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing } from "../theme";
 import { truths, dares, challengeLevels } from "../data/mock";
 import { useP2P } from "../context/P2PContext";
+import GameThread from "../components/GameThread";
 
 const GAME_ID = "verdad";
 
@@ -106,6 +107,8 @@ export default function TruthDareScreen({ navigation }) {
             {current || "Elige Verdad o Reto para comenzar."}
           </Text>
         </View>
+
+        <GameThread />
 
         <View style={styles.actions}>
           <Pressable

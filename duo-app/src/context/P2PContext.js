@@ -26,6 +26,7 @@ import {
   buildGame,
   readGame,
   splitPhoto,
+  splitFile,
   PhotoAssembler,
   readMsg,
 } from "../services/protocol";
@@ -52,6 +53,16 @@ const P2PContext = createContext(null);
 
 function msgsKey(coupleId) {
   return `duo.msgs.${coupleId}`;
+}
+
+// Extensión del archivo: así el otro teléfono sabe cómo abrirlo (foto/audio/vídeo).
+function extOf(uri, kind) {
+  const m = /\.([a-z0-9]+)(\?|#|$)/i.exec(String(uri || ""));
+  const e = m ? m[1].toLowerCase() : "";
+  if (e === "mp4" || e === "mov") return "mp4";
+  if (e === "m4a" || e === "aac" || e === "mp3" || e === "caf") return "m4a";
+  if (e === "webp") return "webp";
+  return kind === "audio" ? "m4a" : kind === "video" ? "mp4" : "jpg";
 }
 
 function log(...args) {
@@ -186,6 +197,7 @@ export function P2PProvider({ children }) {
           level: g.level,
           prompt: g.prompt,
           mode: g.mode,
+          replies: g.replies,
         });
       }
     }, GAME_BEACON_INTERVAL);
@@ -250,6 +262,7 @@ export function P2PProvider({ children }) {
         level,
         prompt: null,
         mode: null,
+        replies: [],
         host: "me",
         ts: Date.now(),
       };
@@ -290,6 +303,26 @@ export function P2PProvider({ children }) {
     [sendGame]
   );
 
+  // Respuesta al reto/pregunta: cualquiera de los dos puede contestar y se
+  // sincroniza en el juego (por eso se ve la conversación del reto en los dos).
+  const sendGameReply = useCallback(
+    (text) => {
+      const clean = String(text || "").trim().slice(0, 300);
+      if (!clean) return false;
+      const prev = gameRef.current || {};
+      const replies = [
+        ...(prev.replies || []),
+        { from: "me", text: clean, ts: Date.now() },
+      ].slice(-30);
+      const s = { ...prev, replies, ts: Date.now() };
+      gameRef.current = s;
+      setGameSession(s);
+      sendGame({ k: "reply", gameId: s.gameId, text: clean, ts: Date.now() });
+      return true;
+    },
+    [sendGame]
+  );
+
   const endGame = useCallback(() => {
     gameRef.current = null;
     setGameSession(null);
@@ -317,12 +350,42 @@ export function P2PProvider({ children }) {
         setGameSession(null);
         return;
       }
+      // La pareja contesta un reto/pregunta: añadimos su respuesta al hilo.
+      if (g.k === "reply") {
+        const base =
+          gameRef.current && gameRef.current.gameId === g.gameId
+            ? gameRef.current
+            : null;
+        const replies = [
+          ...(base?.replies || []),
+          { from: "them", text: String(g.text || "").slice(0, 300), ts: g.ts || Date.now() },
+        ].slice(-30);
+        const s2 = {
+          gameId: g.gameId || base?.gameId,
+          level: base?.level || 1,
+          prompt: base?.prompt ?? null,
+          mode: base?.mode ?? null,
+          replies,
+          host: base?.host || "them",
+          ts: Date.now(),
+        };
+        gameRef.current = s2;
+        setGameSession(s2);
+        notifyIfBackground(
+          `💬 ${sessionRef.current?.partnerName || "Tu pareja"} te respondió en el juego`
+        );
+        return;
+      }
       const prev =
         gameRef.current && gameRef.current.gameId === g.gameId
           ? gameRef.current
           : null;
       const s = {
         gameId: g.gameId || prev?.gameId,
+        replies:
+          Array.isArray(g.replies) && g.replies.length
+            ? g.replies.slice(-30)
+            : prev?.replies || [],
         level: g.level != null ? g.level : prev?.level || 1,
         prompt:
           g.k === "level"
@@ -356,7 +419,11 @@ export function P2PProvider({ children }) {
   const sendFrameFor = useCallback(
     (row) => {
       if (!priv || !partnerPub) return false;
-      if (row.kind === "photo") {
+      if (
+        row.kind === "photo" ||
+        row.kind === "audio" ||
+        row.kind === "video"
+      ) {
         if (!row.uri) return false;
         return (async () => {
           try {
@@ -367,7 +434,14 @@ export function P2PProvider({ children }) {
             });
             const enc = encryptBytes(b64ToBytes(b64), priv, partnerPub);
             if (!enc) return false;
-            const frames = splitPhoto(row.id, enc.nonceB64, enc.cipherB64);
+            const ext = extOf(row.uri, row.kind);
+            const frames = splitFile(
+              row.id,
+              row.kind,
+              ext,
+              enc.nonceB64,
+              enc.cipherB64
+            );
             let ok = true;
             for (const f of frames) {
               const sent = sendFrame(f);
@@ -413,15 +487,17 @@ export function P2PProvider({ children }) {
     [appendMessage, sendFrameFor]
   );
 
-  const sendPhoto = useCallback(
-    async (tmpUri) => {
+  // Envía un archivo cifrado (foto, audio o vídeo) troceado por el relay.
+  const sendMedia = useCallback(
+    async (tmpUri, kind = "photo") => {
       const id = `m_${randomId()}`;
-      const dest = `${FileSystem.documentDirectory}duo_send_${id}.jpg`;
+      const ext = extOf(tmpUri, kind);
+      const dest = `${FileSystem.documentDirectory}duo_send_${id}.${ext}`;
       await FileSystem.copyAsync({ from: tmpUri, to: dest });
       const row = {
         id,
         from: "me",
-        kind: "photo",
+        kind,
         uri: dest,
         ts: Date.now(),
         pending: true,
@@ -431,6 +507,19 @@ export function P2PProvider({ children }) {
       return row;
     },
     [appendMessage, sendFrameFor]
+  );
+
+  const sendPhoto = useCallback(
+    (tmpUri) => sendMedia(tmpUri, "photo"),
+    [sendMedia]
+  );
+  const sendAudio = useCallback(
+    (tmpUri) => sendMedia(tmpUri, "audio"),
+    [sendMedia]
+  );
+  const sendVideo = useCallback(
+    (tmpUri) => sendMedia(tmpUri, "video"),
+    [sendMedia]
   );
 
   const sendTyping = useCallback(
@@ -481,7 +570,12 @@ export function P2PProvider({ children }) {
         return;
       }
 
-      if (frame.t === "photo-meta" || frame.t === "photo-chunk") {
+      if (
+        frame.t === "photo-meta" ||
+        frame.t === "photo-chunk" ||
+        frame.t === "file-meta" ||
+        frame.t === "file-chunk"
+      ) {
         const done = assemblerRef.current.accept(frame);
         if (!done) return;
         const plain = decryptBytes(
@@ -492,7 +586,7 @@ export function P2PProvider({ children }) {
         );
         sendFrame(buildAck(frame.id));
         if (!plain) return;
-        const dest = `${FileSystem.documentDirectory}duo_${done.id}.jpg`;
+        const dest = `${FileSystem.documentDirectory}duo_${done.id}.${done.ext}`;
         try {
           await FileSystem.writeAsStringAsync(dest, bytesToB64(plain), {
             encoding: FileSystem.EncodingType.Base64,
@@ -503,12 +597,21 @@ export function P2PProvider({ children }) {
         const added = appendMessage({
           id: done.id,
           from: "them",
-          kind: "photo",
+          kind: done.kind || "photo",
           uri: dest,
           ts: Date.now(),
           pending: false,
         });
-        if (added) notifyIfBackground("📷 Te envió una foto");
+        if (added) {
+          const k = done.kind || "photo";
+          notifyIfBackground(
+            k === "audio"
+              ? "🎙️ Te envió una nota de voz"
+              : k === "video"
+              ? "🎬 Te envió un vídeo"
+              : "📷 Te envió una foto"
+          );
+        }
       }
     },
     [
@@ -618,6 +721,8 @@ export function P2PProvider({ children }) {
         typing,
         sendText,
         sendPhoto,
+        sendAudio,
+        sendVideo,
         sendTyping,
         pendingPair,
         acceptPairing,
@@ -636,6 +741,7 @@ export function P2PProvider({ children }) {
         drawGame,
         endGame,
         endGameIf,
+        sendGameReply,
         // borrado
         clearHistory,
         deleteStoredPhotos,

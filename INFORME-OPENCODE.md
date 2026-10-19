@@ -6,16 +6,17 @@
 > Este archivo está pensado para que un agente de opencode (u otro dev) retome el
 > trabajo sin contexto previo.
 
-Última actualización: 18 de octubre de 2026
+Última actualización: 19 de octubre de 2026
 
 ---
 
 ## 0) Resumen ejecutivo
 
 **Duo** es una app privada para parejas (solo 2 personas vinculadas) que incluye
-chat privado entre los dos teléfonos, envío de fotos, **juegos/retos compartidos
-sincronizados entre los dos** (por niveles) y cifrado extremo a extremo (E2E) de
-textos, fotos y estado del juego.
+chat privado entre los dos teléfonos, envío de **fotos, audio y vídeo**,
+**juegos/retos compartidos sincronizados entre los dos** (por niveles, con
+**respuestas dentro del juego**) y cifrado extremo a extremo (E2E) de textos,
+fotos, audio/vídeo y estado del juego.
 
 **Arquitectura por relay: no existe servidor propio.** El backend histórico
 (`duo-server/`: Express + Socket.io + SQLite) fue **eliminado**. Los dos teléfonos
@@ -58,42 +59,71 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
 - [x] Chat en tiempo real + "escribiendo…" + acks, deduplicación y **bandeja de
       salida** (reintento **cada 12 s** hasta recibir el ACK: entrega diferida
       fiable).
-- [x] Fotos cifradas en origen, troceadas en base64 y reensambladas al recibir.
+- [x] **Audio, vídeo y cámara en el chat** (v0.6.0): fotos tomadas con la cámara
+      del propio móvil (además de las de la galería), **notas de voz** grabadas
+      y reproducidas dentro del chat (`expo-av`; permisos `RECORD_AUDIO` y
+      `READ_MEDIA_VIDEO`) y **vídeos cortos** desde la cámara o la galería
+      (aviso si pesan más de 6 MB). Todo cifrado en origen y troceado por el
+      canal con tramas `file-meta`/`file-chunk` (con `kind` = photo/audio/video
+      y `ext`), ensambladas con `PhotoAssembler` y descifradas en el otro
+      teléfono. Burbujas reproductoras: audio con play/pausa, vídeo con visor a
+      pantalla completa.
 - [x] **Juegos compartidos** (v0.5.0): el estado del juego se sincroniza con la
       pareja por el relay cifrado (marco `game` en `protocol.js`); al iniciar un
       juego se envía un `start` y la app **abre sola** esa pantalla en el otro
       teléfono. Nivel y reto son comunes; el anfitrión **reenvía el estado cada
       6 s** (baliza) y «Terminar juego» acaba en los dos.
+- [x] **Respuestas dentro de los juegos** (v0.6.0): cualquiera de los dos puede
+      responder el reto/pregunta; las respuestas forman un **hilo
+      (`GameThread`)** sincronizado en los dos teléfonos (trama `reply` cifrada
+      dentro del marco de juego —`sendGameReply` en `P2PContext`—; la baliza de
+      `sync` incluye el hilo).
 - [x] **5 niveles** de juegos/retos (🌸 Suave · 💞 Romántico · 🌶️ Picante ·
       🔥 Atrevido · 😈 Íntimo **+18**), elegidos antes de jugar y sincronizados;
       `challenges`/`diceChallenges`/`truths`/`dares` indexados por nivel y
       pensados para la distancia (chat, audio, foto o videollamada).
+- [x] **Contenido de juegos ampliado** (v0.6.0): 5 pools nuevos
+      (`src/data/pool-retos.js`, `pool-truths.js`, `pool-dares.js`,
+      `pool-dados.js`, `pool-preguntas.js`), cada uno con **22 opciones únicas
+      por nivel × 5 niveles = 110 ítems** (los tests exigen ≥ 20 por nivel y por
+      juego). «Para Conocernos» ahora también tiene selector de nivel;
+      `mock.js` reexporta los pools.
 - [x] **Invitación con enlace de descarga** (`src/config.js`, `INVITE_MESSAGE`):
       botón para compartir el enlace del APK en el onboarding, en Juegos y en el
       Perfil, para invitar a la pareja aunque todavía no tenga la app.
 - [x] **Borrado de contenido** local (con confirmación): `clearHistory()`,
       `deleteStoredPhotos()` y `wipeAllContent()`; «Desvincular» también confirma.
       Aviso de que solo borra la copia local (la de la pareja no se toca).
+- [x] **Aviso de actualizaciones in-app** (v0.6.0): `src/services/updatecheck.js`
+      y `src/services/version.js` comparan la versión instalada (`app.json`) con
+      el `latest` de GitHub Releases; `UpdateModal` al abrir la app o volver a
+      primer plano, con **cooldown de 6 horas** y sin insistir con una versión ya
+      descartada; botón que abre la descarga (`…/releases/latest/download/duo.apk`).
 - [x] Persistencia de sesión + historial local cifrado en AsyncStorage (300
       últimos mensajes) + fotos descifradas en almacenamiento local.
 - [x] Notificaciones locales en segundo plano.
 - [x] Cifrado E2E: X25519 + HKDF-SHA256 + AES-256-GCM, módulos `@noble/*`.
 - [x] Polyfill `crypto.getRandomValues` con RNG nativo (`expo-crypto`), cargado
       **antes** que cualquier otro módulo (`index.js`).
-- [x] Pruebas: `duo-app/test/duo-test.mjs` → **`npm test`**, **64
-      verificaciones** (identidad/SAS, encuadre, auth E2E, QR v2, temas/sobre del
-      relay, mensajes, fotos, **cifrado del estado del juego** —un tercero no lo
-      descifra y el reto no viaja en claro; la pareja recibe el juego iniciado— y
-      una sesión completa sobre un "bus" en memoria que imita al broker). Además
-      sigue habiendo una prueba real contra el broker MQTT (fuera de la suite).
-- [x] Bundle de Metro `expo export` verde (`--platform android`).
+- [x] Pruebas: `duo-app/test/duo-test.mjs` → **`npm test`**, **103
+      verificaciones, 0 fallos** (identidad/SAS, encuadre, auth E2E, QR v2,
+      temas/sobre del relay, mensajes, fotos, **cifrado del estado del juego**
+      —un tercero no lo descifra y el reto no viaja en claro; la pareja recibe el
+      juego iniciado—, **respuestas de juego cifradas**, **troceado de audio/vídeo
+      `file-*`**, **comparación de versiones**, **contenido ≥ 20 por nivel y por
+      juego** y una sesión completa sobre un "bus" en memoria que imita al
+      broker). Además sigue habiendo una prueba real contra el broker MQTT (fuera
+      de la suite).
+- [x] Bundle de Metro `expo export` verde (`--platform android`; Hermes, 4.18 MB).
 - [x] APK por GitHub Actions en cada push a `main` que toque `duo-app/**`
       (`npm ci` → `npm test` → `expo prebuild` → `gradlew assembleRelease`).
 - [x] Releases publicados: **v0.1.2** (versión con servidor),
       **v0.2.0** (primera versión P2P) y **v0.3.0** (conexión por Internet sin
       servidor propio; app 0.3.0 / versionCode 3). **v0.4.0** (relay MQTT, app
-      0.4.0 / versionCode 4) y **v0.5.0** (juegos compartidos + borrado +
-      invitación + nivel Íntimo; app 0.5.0 / versionCode 5) están **pendientes
+      0.4.0 / versionCode 4), **v0.5.0** (juegos compartidos + borrado +
+      invitación + nivel Íntimo; app 0.5.0 / versionCode 5) y **v0.6.0**
+      (respuestas en juegos + audio/vídeo/cámara en el chat + contenido ampliado
+      + aviso de actualizaciones; app 0.6.0 / versionCode 6) están **pendientes
       de compilar y publicar**.
 
 ### Pendiente
@@ -103,11 +133,14 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
       entrega diferida (reintentos + ACK).
 - [ ] Probar en **dos teléfonos** los **juegos compartidos**: que la pantalla se
       abra sola en la pareja, que nivel y reto se sincronicen y que «Terminar
-      juego» cierre en los dos.
+      juego» cierre en los dos. Que el **hilo de respuestas** (`GameThread`) se
+      sincronice en los dos.
 - [ ] Probar en **dos teléfonos** el **borrado de contenido** y el **enlace de
       invitación** (descarga del APK `duo.apk`).
 - [ ] Publicar la **Release v0.5.0** (pendiente de compilar el APK por la CI y
       subirlo a Releases).
+- [ ] Publicar la **Release v0.6.0** (app 0.6.0 / versionCode 6; pendiente de
+      compilar el APK por la CI y subirlo a Releases).
 - [ ] Más juegos/retos; publicar en Play Store.
 
 ---
@@ -121,19 +154,22 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
 | `duo-app/index.js` | Importa `src/services/polyfills.js` **primero** (RNG para Hermes). |
 | `duo-app/App.js` | Navegación (stack + tabs) con un `navigationRef`: cuando llega un `start` de juego de la pareja (`incomingGame`), **navega solo** a la pantalla correspondiente (`GAME_ROUTES`), de modo que el juego aparece en los dos teléfonos. |
 | `duo-app/src/config.js` | Datos **públicos**: `REPO_URL`, `RELEASES_URL`, `APP_DOWNLOAD_URL` (= `…/releases/latest/download/duo.apk`) e `INVITE_MESSAGE` (texto para invitar a la pareja). |
+| `duo-app/src/data/pool-*.js` | Contenido de los juegos: `pool-retos.js`, `pool-truths.js`, `pool-dares.js`, `pool-dados.js` y `pool-preguntas.js`, cada uno con **22 opciones únicas por nivel × 5 niveles = 110 ítems** (los tests exigen ≥ 20 por nivel y por juego). `mock.js` los reexporta. |
 | `duo-app/src/services/cryptocore.js` | Núcleo criptográfico **puro** (sin React Native): claves, cifrado, `deriveCoupleId`, código SAS, emoji por clave, secreto del QR. Testeable en Node. |
-| `duo-app/src/services/protocol.js` | **Puro**: encuadre de tramas (prefijo de 4 bytes + JSON, máx. 8 MB), `auth`/`pair-req`/`pair-ok`/`msg`/`ack`/`ping`/`typing`/**`game`**, troceo de fotos (48000 chars). `buildGame`/`readGame` cifran el estado del juego igual que el chat. |
+| `duo-app/src/services/protocol.js` | **Puro**: encuadre de tramas (prefijo de 4 bytes + JSON, máx. 8 MB), `auth`/`pair-req`/`pair-ok`/`msg`/`ack`/`ping`/`typing`/**`game`** (con `reply` dentro para el hilo de respuestas)/**`file-meta`**/**`file-chunk`**, troceo de archivos (48000 chars). `buildGame`/`readGame` cifran el estado del juego igual que el chat. |
 | `duo-app/src/services/mqttws.js` | Cliente **MQTT 3.1.1 sobre WebSocket** mínimo y **sin dependencias** (no usa `Buffer`/`process`/`TextEncoder`). Publica/suscribe con QoS 0, ping keepalive y reconexión con backoff. `MQTT_BROKERS` con los 3 brokers. |
 | `duo-app/src/services/relayproto.js` | Lógica **pura** del relay: temas (`duo/v2/pair/<hash>`, `duo/v2/chat/<hash>`), QR v2 (`duo:pair:v2:<pub>:<ps>`) y sobre `{s, f}`. |
 | `duo-app/src/services/relay.js` | Transporte `Relay` por el broker público. **Misma API** que el antiguo P2P (`onEvent`/`configure`/`start`/`stop`/`wake`/`send`/`startPairing`/`joinPairing`/`acceptPairing`/`rejectPairing`/`cancelPairing`; eventos `status`/`session`/`frame`/`pair-request`/`paired`). Elige broker probando los 3 en orden. |
 | `duo-app/src/services/crypto.js` | Wrapper de almacenamiento: guarda/carga el par de claves en AsyncStorage y re-exporta `cryptocore`. |
-| `duo-app/src/context/P2PContext.js` | Capa React: historial local (`duo.msgs.<coupleId>`), bandeja de salida, envío/recepción de fotos, acks/dedup, typing, notificaciones en 2.º plano, API de pareo, **estado del juego compartido** (`gameSession`, `startGame`, `setGameLevel`, `drawGame`, `endGame`, `incomingGame`, `clearIncomingGame`; baliza cada 6 s) y **borrado** (`clearHistory`, `deleteStoredPhotos`, `wipeAllContent`). Reintento periódico cada 12 s (`flushOutbox` en `flushRef`). |
+| `duo-app/src/services/version.js` | Lee la versión instalada (`app.json`) y compara versiones (semver). |
+| `duo-app/src/services/updatecheck.js` | Comprueba el `latest` de GitHub Releases contra la versión instalada y propone el aviso `UpdateModal` (cooldown 6 h, sin insistir con una versión ya descartada; botón que abre la descarga). |
+| `duo-app/src/context/P2PContext.js` | Capa React: historial local (`duo.msgs.<coupleId>`), bandeja de salida, envío/recepción de **archivos** (fotos, audio y vídeo por `file-meta`/`file-chunk`, ensamblados con `PhotoAssembler`), acks/dedup, typing, notificaciones en 2.º plano, API de pareo, **estado del juego compartido** (`gameSession`, `startGame`, `setGameLevel`, `drawGame`, **`sendGameReply`** (hilo `GameThread`), `endGame`, `incomingGame`, `clearIncomingGame`; baliza cada 6 s **que incluye el hilo de respuestas**) y **borrado** (`clearHistory`, `deleteStoredPhotos`, `wipeAllContent`). Reintento periódico cada 12 s (`flushOutbox` en `flushRef`). |
 | `duo-app/src/context/E2EContext.js` | Expone las claves del dispositivo; `peerPub` = `session.partnerPub`. |
 | `duo-app/src/screens/OnboardingScreen.js` | Un solo flujo de vínculo: `welcome` (crear / escanear / pegar + **«📲 Enviar el enlace de descarga a mi pareja»**), `create` (QR de 240 px + «📤 Compartir el código» vía `Share`), `paste`, `scan` y `joining` (spinner + SAS). |
-| `duo-app/src/screens/ChatScreen.js` | Chat sobre `useP2P()` (sin api/socket). Fotos con `expo-image-manipulator` (1280 px, JPEG 0.7) antes de cifrar. El botón del candado explica el cifrado. |
+| `duo-app/src/screens/ChatScreen.js` | Chat sobre `useP2P()` (sin api/socket). Texto, fotos (galería o cámara), notas de voz y vídeos cortos; fotos con `expo-image-manipulator` (1280 px, JPEG 0.7) antes de cifrar. Audio/vídeo van por `file-meta`/`file-chunk` y se reproducen en burbujas (audio play/pausa, vídeo con visor a pantalla completa). El botón del candado explica el cifrado. |
 | `duo-app/src/components/ChallengeDeck.js` | Base común de los juegos con botones: lee/escribe el **estado compartido** (nivel y reto) en vez de sortear localmente; botón «Terminar juego». |
 | `duo-app/src/screens/ProfileScreen.js` | Perfil con **datos reales** (nº de mensajes/fotos), invitación + enlace de descarga y **borrado** (historial, fotos, todo) + desvincular, todo con confirmación. |
-| `duo-app/test/duo-test.mjs` | Pruebas (**64 verificaciones**): copia `cryptocore.js`/`protocol.js`/`relayproto.js` a temporales `.mjs` y los importa en Node; incluye cifrado del estado del juego y una sesión completa sobre un "bus" en memoria que imita al broker. |
+| `duo-app/test/duo-test.mjs` | Pruebas (**103 verificaciones, 0 fallos**): copia `cryptocore.js`/`protocol.js`/`relayproto.js` a temporales `.mjs` y los importa en Node; incluye cifrado del estado del juego, respuestas de juego cifradas, troceado de audio/vídeo (`file-*`), comparación de versiones, contenido ≥ 20 por nivel y por juego, y una sesión completa sobre un "bus" en memoria que imita al broker. |
 
 ### Flujo de vínculo (QR / código)
 
@@ -174,7 +210,7 @@ Sobre:         { s: selfId, f: trama }           (selfId = hash de mi clave púb
 
 ```
 Trama de juego:  { t: "game", ts, nonceB64, ctB64 }   (cifrada E2E)
-Payload:         { k: "start"|"level"|"draw"|"sync"|"end", gameId, level, prompt, mode }
+Payload:         { k: "start"|"level"|"draw"|"reply"|"sync"|"end", gameId, level, prompt, mode }
 ```
 
 1. Al abrir un juego, el host llama `startGame(gameId, level)`: guarda
@@ -188,16 +224,25 @@ Payload:         { k: "start"|"level"|"draw"|"sync"|"end", gameId, level, prompt
 4. Mientras el host esté en línea, una **baliza** reenvía `sync` cada
    `GAME_BEACON_INTERVAL` (6 s) para recuperar mensajes perdidos.
 5. `endGame` publica `{ k: "end" }` y limpia la sesión en ambos lados.
+6. **Respuestas dentro del juego** (v0.6.0): cualquiera de los dos puede
+   responder con `sendGameReply`; la respuesta viaja como `k: "reply"` (trama
+   `reply` cifrada dentro del marco `game`) y forma un **hilo (`GameThread`)**;
+   la **baliza `sync` reenvía el hilo**, así los dos teléfonos ven las mismas
+   respuestas.
 
 ### Cifrado de mensajes
 
 - Mensaje: `encryptText(text, miPriv, pubPareja)` dentro de la trama `msg`.
 - Juego: `buildGame(payload, miPriv, pubPareja)` cifra el estado del juego
-  (nivel/reto) dentro de la trama `game`; `readGame` lo descifra en la pareja.
-  El broker nunca ve a qué jugáis ni el reto.
-- Foto: archivo → copia temporal → `encryptBytes` → `splitPhoto` (chunks de
-  48000 chars) → tramas `photo-meta` + `photo-chunk[i]` → al completar,
-  `PhotoAssembler` devuelve meta → descifra → escribe `duo_<id>.jpg` local.
+  (nivel/reto **y las respuestas del hilo**) dentro de la trama `game`;
+  `readGame` lo descifra en la pareja. El broker nunca ve a qué jugáis ni el
+  reto.
+- Archivos (foto/audio/vídeo): archivo → copia temporal → `encryptBytes` →
+  troceado (chunks de 48000 chars) → tramas `file-meta` + `file-chunk[i]` (con
+  `kind` = photo/audio/video y `ext`) → al completar, `PhotoAssembler` devuelve
+  meta → descifra → foto como `duo_<id>.jpg` local; audio/vídeo como burbuja
+  reproductora (play/pausa y visor a pantalla completa). Los vídeos avisan si
+  superan 6 MB.
 - coupleId: `duo-` + hex(sha256(`duo-couple-v1|pubA|pubB` ordenadas)) →
   idéntico en ambos lados, se deriva localmente (nunca viaja).
 
@@ -228,7 +273,7 @@ Payload:         { k: "start"|"level"|"draw"|"sync"|"end", gameId, level, prompt
 ```bash
 cd duo-app
 npm install
-npm test              # 64 verificaciones (protocolo + relay + cifrado E2E + juego)
+npm test              # 103 verificaciones (protocolo + relay + cifrado E2E + juego + archivos + versiones)
 npx expo start
 ```
 
@@ -293,7 +338,13 @@ npx eas build -p android --profile preview
 - **Juegos compartidos a distancia**: se sincronizan por el mismo canal cifrado
   y la app **navega sola** a la pantalla del juego que inicia la pareja
   (`navigationRef`). El anfitrión reenvía el estado cada 6 s (baliza) para mayor
-  fiabilidad.
+  fiabilidad. Cualquiera de los dos puede responder dentro del juego: el hilo
+  (`GameThread`) viaja cifrado dentro del mismo marco `game` y la baliza lo
+  reenvía.
+- **Aviso de actualizaciones sin servidor**: `updatecheck.js` + `version.js`
+  comparan la versión instalada (`app.json`) con el `latest` de GitHub Releases
+  y muestran `UpdateModal` (cooldown de 6 h; no insisten con una versión ya
+  descartada), con botón a la descarga estable `duo.apk`.
 - **Todo puro separado** (`cryptocore.js`/`protocol.js`/`relayproto.js` sin
   imports de React Native): permite probar la lógica criptográfica, de tramas y
   del relay en Node puro, sin emulator ni build.
@@ -332,7 +383,7 @@ npx eas build -p android --profile preview
 
 ```bash
 cd C:\Users\whustaf\Desktop\DuoProyecto\duo-app
-npm test                          # protocolo + relay (64 ok)
+npm test                          # protocolo + relay (103 ok)
 npx expo export --platform android --output-dir dist   # bundle Metro
 ```
 
@@ -360,5 +411,13 @@ node -e "const b=require('@babel/core'),fs=require('fs'),p=require('path');const
     estable (`duo.apk`)**, **5 niveles** (incluido **Íntimo +18**) y tests a **64
     verificaciones** (app `0.5.0`, versionCode `5`). **Pendiente de compilar y
     publicar.**
+  - `v0.6.0` — **respuestas dentro de los juegos** (hilo `GameThread` cifrado y
+    sincronizado en los dos teléfonos), **audio, vídeo y cámara en el chat**
+    (notas de voz, fotos con la cámara y vídeos cortos, todo E2E por
+    `file-meta`/`file-chunk`), **contenido de juegos ampliado** (5 pools con 110
+    ítems por juego: 22 por nivel × 5 niveles), **aviso de actualizaciones
+    in-app** (cooldown 6 h) y tests a **103 verificaciones, 0 fallos** (bundle
+    Hermes Android 4.18 MB; app `0.6.0`, versionCode `6`). **Pendiente de
+    compilar y publicar.**
 - Tras cambiar dependencias: commit + push y la CI (Actions → Build APK)
   compila y sube el artefacto; descargarlo y publicarlo en el Release.

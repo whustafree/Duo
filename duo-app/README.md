@@ -1,7 +1,8 @@
 # Duo 💞
 
-App privada para parejas: chat (texto + fotos) y **juegos/retos para dos** que se
-juegan **a distancia** y se sincronizan entre los dos teléfonos.
+App privada para parejas: chat (texto, fotos, audio y vídeo) y **juegos/retos
+para dos** que se juegan **a distancia** y se sincronizan entre los dos
+teléfonos.
 
 **No hay ningún servidor propio.** Los dos teléfonos se comunican a través de un
 **broker MQTT público y gratuito** que solo hace de cartero; todo lo que viaja va
@@ -18,15 +19,16 @@ cifrado de extremo a extremo.
   solo hace de cartero; nada depende de un backend ni de un servidor de pago.
 - **El broker ve metadatos mínimos**: los temas (hashes que sin las claves no
   revelan nada), el tamaño de los paquetes y los horarios. **Nunca** ve los
-  mensajes, las fotos ni el estado del juego, que van cifrados de extremo a
-  extremo.
-- **Cifrado extremo a extremo (E2E)** de textos, fotos *y* estado del juego:
-  X25519 + HKDF-SHA256 + AES-256-GCM. Aunque alguien capture el tráfico, solo ve
-  bytes ilegibles; la clave privada **nunca sale del dispositivo**.
+  mensajes, las fotos, el audio/vídeo ni el estado del juego, que van cifrados
+  de extremo a extremo.
+- **Cifrado extremo a extremo (E2E)** de textos, fotos, audio, vídeo *y* estado
+  del juego: X25519 + HKDF-SHA256 + AES-256-GCM. Aunque alguien capture el
+  tráfico, solo ve bytes ilegibles; la clave privada **nunca sale del
+  dispositivo**.
 - **Copia local en cada equipo**: el historial queda guardado en el dispositivo
-  (AsyncStorage) y las fotos se descifran y se guardan en el almacenamiento
-  local de la app. Cada uno conserva su propia copia, que puede **borrar** desde
-  el Perfil (solo la suya).
+  (AsyncStorage) y las fotos, audios y vídeos se descifran y se guardan en el
+  almacenamiento local de la app. Cada uno conserva su propia copia, que puede
+  **borrar** desde el Perfil (solo la suya).
 - **Código de verificación SAS** de 6 dígitos (idéntico en las dos pantallas)
   al vincular, para asegurar que no te enlazaste con la persona equivocada.
 
@@ -39,6 +41,10 @@ cifrado de extremo a extremo.
   sobre permite **ignorar el eco propio** que devuelve el broker.
 - Si la pareja está desconectada, los mensajes quedan **pendientes aquí** y se
   **reintentan cada 12 s** hasta recibir el ACK de entrega.
+- Además de texto se pueden enviar **fotos** (de la galería o con la cámara),
+  **notas de voz** y **vídeos cortos** (aviso si pesan más de 6 MB): todo se
+  cifra en el dispositivo, se trocea (`file-meta`/`file-chunk`) y se reensambla
+  y descifra en el otro teléfono.
 
 ## Vinculación (una sola vez)
 
@@ -61,11 +67,17 @@ No hace falta estar en la misma red; uno crea el vínculo y el otro se une.
 - **Juegos compartidos**: cuando uno abre un juego, la pareja recibe la invitación
   y **la pantalla se abre sola en su teléfono**, así que jugáis a la vez.
 - **Nivel elegido antes de jugar** (y sincronizado): 🌸 Suave · 💞 Romántico ·
-  🌶️ Picante · 🔥 Atrevido · 😈 Íntimo (+18).
+  🌶️ Picante · 🔥 Atrevido · 😈 Íntimo (+18). Todos los juegos tienen niveles,
+  incluido **«Para Conocernos»**.
 - **Nivel y reto son comunes**: lo que sale en un teléfono es lo mismo en el
   otro; el botón **«Terminar juego»** acaba la partida para los dos.
+- **Cualquiera puede responder**: dentro del reto o la pregunta, cualquiera de
+  los dos puede mandar su respuesta; forma un **hilo de respuestas** que aparece
+  sincronizado en los dos teléfonos.
 - Los retos están pensados **para la distancia**: se cumplen por chat, audio,
   foto o videollamada, aunque estéis en ciudades o países distintos.
+- **Contenido ampliado**: cada juego tiene **110 ítems** (22 opciones por nivel
+  × 5 niveles).
 - El estado del juego va **cifrado de extremo a extremo** igual que el chat: nadie
   (ni el broker) sabe a qué jugáis ni qué reto os ha tocado.
 
@@ -81,11 +93,18 @@ No hace falta estar en la misma red; uno crea el vínculo y el otro se une.
   guardadas** o **borrar todo** (con confirmación). Solo borra **tu copia local**;
   la de tu pareja no se toca. «Desvincular» también pide confirmación.
 
+## Nuevas versiones
+
+- Al abrir la app (o volver a primer plano) se comprueba si hay una versión más
+  nueva en GitHub Releases; si la hay aparece un aviso (**UpdateModal**) con un
+  botón para descargarla. Hay un cooldown de 6 horas y no insiste si ya
+  descartaste esa versión.
+
 ## Desarrollo
 
 ```bash
 npm install
-npm test           # 64 verificaciones del protocolo y del relay (corren en Node)
+npm test           # 103 verificaciones (protocolo, relay, juego, archivos, versiones; corren en Node)
 npx expo start     # desarrollo
 ```
 
@@ -109,16 +128,21 @@ npx expo start     # desarrollo
 
 ```
 src/config.js    # enlaces de descarga/invitación (APP_DOWNLOAD_URL)
+src/data/
+  mock.js        # reexporta los pools de juegos
+  pool-*.js      # contenido: pool-retos/truths/dares/dados/preguntas (22×5=110)
 src/services/
   polyfills.js   # crypto.getRandomValues para Hermes (se carga primero)
   cryptocore.js  # núcleo criptográfico puro (testeable en Node)
   crypto.js      # guarda/carga el par de claves del dispositivo
-  protocol.js    # tramas, autenticación, emparejamiento, msgs, fotos y juego
+  protocol.js    # tramas, autenticación, emparejamiento, msgs, archivos y juego
   mqttws.js      # cliente MQTT 3.1.1 sobre WebSocket (sin dependencias)
   relayproto.js  # lógica pura del relay: temas, QR v2 y sobre
   relay.js       # transporte relay por broker público
+  version.js     # versión instalada (app.json) + comparación
+  updatecheck.js # comprueba el latest de GitHub Releases (aviso in-app)
 src/context/
-  P2PContext.js  # transporte relay + historial + bandeja + fotos + juego compartido + borrado
+  P2PContext.js  # transporte relay + historial + bandeja + archivos + juego compartido (con respuestas) + borrado
 test/
   duo-test.mjs   # pruebas (npm test)
 ```

@@ -11,11 +11,11 @@ export default function QuestionsScreen() {
       <ChallengeDeck
         gameId="preguntas"
         title="Para Conocernos"
-        subtitle="Respondan por turnos y escúchense de verdad."
+        subtitle="Elijan nivel y respondan por turnos: escúchense de verdad."
         actionLabel="Nueva pregunta"
         icon="chatbubbles"
-        getItems={() => coupleQuestions}
-        showLevels={false}
+        getItems={(level) => coupleQuestions[level] || []}
+        showLevels={true}
       />
     </SafeAreaView>
   );
