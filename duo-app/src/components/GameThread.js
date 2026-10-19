@@ -14,6 +14,9 @@ export default function GameThread() {
   const replies = (gameSession && gameSession.replies) || [];
   const partnerName = session?.partnerName || "Tu pareja";
 
+  // Sin partida activa (alguien ya la terminó) no hay nada que responder.
+  if (!gameSession) return null;
+
   const send = () => {
     if (!sendGameReply(text)) return;
     setText("");

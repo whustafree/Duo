@@ -310,6 +310,7 @@ export function P2PProvider({ children }) {
       const clean = String(text || "").trim().slice(0, 300);
       if (!clean) return false;
       const prev = gameRef.current || {};
+      if (!prev.gameId) return false; // no hay partida activa: nada que responder
       const replies = [
         ...(prev.replies || []),
         { from: "me", text: clean, ts: Date.now() },
