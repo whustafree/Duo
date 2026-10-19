@@ -296,6 +296,16 @@ export function P2PProvider({ children }) {
     sendGame({ k: "end" });
   }, [sendGame]);
 
+  // Termina SOLO si la sesión activa es del juego indicado (evita matar un
+  // juego distinto si la pareja acaba de iniciar otro mientras salimos).
+  const endGameIf = useCallback(
+    (gameId) => {
+      const g = gameRef.current;
+      if (g && g.gameId === gameId) endGame();
+    },
+    [endGame]
+  );
+
   const clearIncomingGame = useCallback(() => setIncomingGame(null), []);
 
   const handleGameFrame = useCallback(
@@ -625,6 +635,7 @@ export function P2PProvider({ children }) {
         setGameLevel,
         drawGame,
         endGame,
+        endGameIf,
         // borrado
         clearHistory,
         deleteStoredPhotos,

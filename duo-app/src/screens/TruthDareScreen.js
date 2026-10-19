@@ -10,7 +10,8 @@ import { useP2P } from "../context/P2PContext";
 const GAME_ID = "verdad";
 
 export default function TruthDareScreen({ navigation }) {
-  const { gameSession, startGame, setGameLevel, drawGame, endGame } = useP2P();
+  const { gameSession, startGame, setGameLevel, drawGame, endGame, endGameIf } =
+    useP2P();
 
   const session =
     gameSession && gameSession.gameId === GAME_ID ? gameSession : null;
@@ -32,6 +33,7 @@ export default function TruthDareScreen({ navigation }) {
 
   useEffect(() => {
     if (!session) startGame(GAME_ID, 1);
+    return () => endGameIf(GAME_ID);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

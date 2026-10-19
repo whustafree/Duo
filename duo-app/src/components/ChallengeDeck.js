@@ -18,7 +18,8 @@ export default function ChallengeDeck({
   getItems,
   showLevels = true,
 }) {
-  const { gameSession, startGame, setGameLevel, drawGame, endGame } = useP2P();
+  const { gameSession, startGame, setGameLevel, drawGame, endGame, endGameIf } =
+    useP2P();
   const navigation = useNavigation();
 
   const session =
@@ -38,9 +39,11 @@ export default function ChallengeDeck({
   }, [gameSession, navigation]);
 
   // Al abrir la pantalla, iniciamos el juego (esto avisa a la pareja). Si la
-  // pareja ya lo había iniciado, la sesión existe y no la pisamos.
+  // pareja ya lo había iniciado, la sesión existe y no la pisamos. Al salir de
+  // la pantalla (atrás), el juego termina para los dos y no deja sesión huérfana.
   useEffect(() => {
     if (!session) startGame(gameId, 1);
+    return () => endGameIf(gameId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
