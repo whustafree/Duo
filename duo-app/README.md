@@ -60,9 +60,10 @@ cifrado de extremo a extremo.
   **6 reacciones** (😍😘🔥😂🥺❤️): van cifradas y sincronizadas en los dos
   teléfonos, y las versiones antiguas las ven como texto normal.
 - Además de texto se pueden enviar **fotos** (de la galería o con la cámara),
-  **notas de voz** y **vídeos cortos** (aviso si pesan más de 6 MB): todo se
-  cifra en el dispositivo, se trocea (`file-meta`/`file-chunk`) y se reensambla
-  y descifra en el otro teléfono.
+  **notas de voz** y **vídeos cortos** (máximo **6 MB**: si pesa más se avisa y
+  no se envía): todo se cifra en el dispositivo, se trocea
+  (`file-meta`/`file-chunk`) **trozo a trozo con pausa** (sin congelar la
+  interfaz) y se reensambla y descifra en el otro teléfono.
 
 ## Vinculación (una sola vez)
 
@@ -122,7 +123,7 @@ No hace falta estar en la misma red; uno crea el vínculo y el otro se une.
 
 ```bash
 npm install
-npm test           # 141 verificaciones (protocolo, relay, bloqueo, chat, juego, versiones; corren en Node)
+npm test           # 146 verificaciones (protocolo, relay, bloqueo, chat, juego, versiones; corren en Node)
 npx expo start     # desarrollo
 ```
 

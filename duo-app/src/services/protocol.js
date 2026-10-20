@@ -268,6 +268,11 @@ export function buildPong() {
 
 export const PHOTO_CHUNK = 48000; // caracteres base64 por trama (~36 KB binarios)
 
+// Tope de seguridad del receptor: ~6 MB en binario dejan margen de sobra para
+// los archivos de la app (máx. 6 MB) y evitan que un emisor roto o malicioso
+// anuncie miles de trozos y cuelgue el ensamblado.
+export const MAX_FILE_CHUNKS = 400;
+
 export function splitPhoto(id, nonceB64, cipherB64, chunkSize = PHOTO_CHUNK) {
   const total = Math.max(1, Math.ceil(cipherB64.length / chunkSize));
   const frames = [
@@ -287,30 +292,41 @@ export function splitPhoto(id, nonceB64, cipherB64, chunkSize = PHOTO_CHUNK) {
 
 // Mismo troceado para AUDIO y VÍDEO (y también fotos): cada archivo lleva su
 // tipo y su extensión para poder reproducirlo/reproducirlo en el otro teléfono.
-export function splitFile(id, kind, ext, nonceB64, cipherB64, chunkSize = PHOTO_CHUNK) {
+// `iterFileFrames` es un generador para enviar trozo a trozo SIN copiar el
+// cifrado entero en memoria (un vídeo congelaba la app al construir todas las
+// tramas de una vez); `splitFile` sigue ofreciendo el array completo.
+export function* iterFileFrames(
+  id,
+  kind,
+  ext,
+  nonceB64,
+  cipherB64,
+  chunkSize = PHOTO_CHUNK
+) {
   const total = Math.max(1, Math.ceil(cipherB64.length / chunkSize));
-  const frames = [
-    {
-      t: "file-meta",
-      v: PROTOCOL_VERSION,
-      id,
-      kind,
-      ext,
-      ts: Date.now(),
-      nonceB64,
-      chunks: total,
-    },
-  ];
+  yield {
+    t: "file-meta",
+    v: PROTOCOL_VERSION,
+    id,
+    kind,
+    ext,
+    ts: Date.now(),
+    nonceB64,
+    chunks: total,
+  };
   for (let i = 0, idx = 0; i < cipherB64.length; i += chunkSize, idx++) {
-    frames.push({
+    yield {
       t: "file-chunk",
       v: PROTOCOL_VERSION,
       id,
       i: idx,
       d: cipherB64.slice(i, i + chunkSize),
-    });
+    };
   }
-  return frames;
+}
+
+export function splitFile(id, kind, ext, nonceB64, cipherB64, chunkSize = PHOTO_CHUNK) {
+  return [...iterFileFrames(id, kind, ext, nonceB64, cipherB64, chunkSize)];
 }
 
 // Recolector del lado receptor: alimentado con las tramas que llegan,
@@ -324,11 +340,18 @@ export class PhotoAssembler {
     const isMeta = frame.t === "photo-meta" || frame.t === "file-meta";
     const isChunk = frame.t === "photo-chunk" || frame.t === "file-chunk";
     if (isMeta) {
+      const total = Number(frame.chunks) || 0;
+      // Un emisor roto o malicioso no puede colgar el receptor: si el número
+      // de trozos está fuera de rango, se descarta el archivo entero.
+      if (total < 1 || total > MAX_FILE_CHUNKS) {
+        this.pending.delete(frame.id);
+        return null;
+      }
       this.pending.set(frame.id, {
         nonceB64: frame.nonceB64,
         kind: frame.kind || "photo",
         ext: frame.ext || null,
-        total: frame.chunks,
+        total,
         parts: [],
       });
       return null;
@@ -336,7 +359,12 @@ export class PhotoAssembler {
     if (isChunk) {
       const state = this.pending.get(frame.id);
       if (!state) return null;
-      state.parts[frame.i] = frame.d;
+      const idx = Number(frame.i);
+      // Índice inválido o fuera de rango: se ignora (también protege contra
+      // trozos de dos envíos distintos intercalados).
+      if (!Number.isInteger(idx) || idx < 0 || idx >= state.total) return null;
+      if (typeof frame.d !== "string") return null;
+      state.parts[idx] = frame.d;
       if (state.parts.length < state.total) return null;
       // Verificar que no falte ningún trozo.
       for (let i = 0; i < state.total; i++) {

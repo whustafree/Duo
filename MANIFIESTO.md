@@ -81,7 +81,7 @@ duo-app/
 ├── babel.config.js
 ├── package.json            # incluye "npm test" → pruebas del protocolo (relay)
 ├── test/
-│   └── duo-test.mjs        # 141 verificaciones, 0 fallos (relay + cifrado E2E + juego + archivos + versiones + bloqueo/cofre + chat estructurado + auto-destrucción + bus en memoria)
+│   └── duo-test.mjs        # 146 verificaciones, 0 fallos (relay + cifrado E2E + juego + archivos + versiones + bloqueo/cofre + chat estructurado + auto-destrucción + bus en memoria)
 └── src/
     ├── theme.js            # Colores, espaciados, tipografía
     ├── config.js           # Enlaces públicos (repo, releases, descarga) e invitación
@@ -210,7 +210,7 @@ duo-app/
 ```bash
 cd duo-app
 npm install
-npm test           # pruebas del protocolo y del relay (141 verificaciones)
+npm test           # pruebas del protocolo y del relay (146 verificaciones)
 npx expo start     # escanea el QR con Expo Go
 ```
 
@@ -237,12 +237,14 @@ cd duo-app && eas build -p android --profile preview
 
 ## 5. Estado actual (qué ya está hecho)
 
-Versión actual: **0.7.0** (versionCode 7). Los juegos son **compartidos** y van
+Versión actual: **0.7.1** (versionCode 8). Los juegos son **compartidos** y van
 cifrados (con respuestas dentro de los juegos), el chat admite audio, vídeo y
 fotos de cámara, estados ✓/✓✓, citas y reacciones; hay avisos reales con la app
 cerrada, bloqueo con PIN/huella, privacidad configurable, aviso de
-actualizaciones, borrado de contenido y enlace de invitación. Las Releases
-**v0.5.0**, **v0.6.0** y **v0.7.0** ya están publicadas.
+actualizaciones, borrado de contenido y enlace de invitación; el envío de
+archivos tiene **tope duro de 6 MB y ritmo pausado** (no congela la interfaz).
+Las Releases **v0.5.0**, **v0.6.0**, **v0.7.0** y **v0.7.1** ya están
+publicadas.
 
 - [x] Maqueta completa de UI (todas las pantallas).
 - [x] **Sin servidor propio ni de pago**: chat/fotos/vinculación a través de un
@@ -318,18 +320,32 @@ actualizaciones, borrado de contenido y enlace de invitación. Las Releases
       **auto-destrucción** de la copia local (Nunca/7/30/90 días,
       `retention.js`), **huella** y código de verificación con **marca «✓
       Comprobado»**. Todo desde la sección «Privacidad de la app» del Perfil.
+- [x] **Estabilidad del envío de archivos** (v0.7.1, tras un reporte de vídeos
+      que congelaban la app): **tope duro de 6 MB** comprobado con el tamaño
+      real del archivo (`getInfoAsync`, sin leerlo en memoria) y **rechazo con
+      aviso claro** si pesa más; envío **trozo a trozo con pausa** mediante el
+      generador `iterFileFrames` (sin construir todas las tramas de golpe ni
+      publicar en bucle síncrono: antes bloqueaba la interfaz segundos);
+      **guardia de envío en curso** (`sendingRef`: la cola de reintentos no
+      relanza un archivo a medio enviar — antes duplicaba la transmisión y el
+      receptor mezclaba trozos de dos cifrados distintos → vídeo corrupto que
+      nunca aparecía); el receptor **ignora metas con trozos absurdos e índices
+      fuera de rango**; y la auto-destrucción **borra también los archivos
+      locales** caducados.
 - [x] Persistencia de sesión + **historial local cifrado en origen** (AsyncStorage).
 - [x] Notificaciones locales.
 - [x] Cifrado E2E **completo** de textos, fotos, audio/vídeo y estado del juego (X25519 + AES-256-GCM).
 - [x] Polyfill de `crypto.getRandomValues` con RNG nativo (expo-crypto).
-- [x] Tests del protocolo (`duo-app/test/duo-test.mjs`, **141 verificaciones, 0
+- [x] Tests del protocolo (`duo-app/test/duo-test.mjs`, **146 verificaciones, 0
       fallos**): identidad/SAS, encuadre, auth E2E, QR v2, temas/sobre del relay,
       mensajes, fotos, **cifrado del estado del juego** (un tercero no lo
       descifra y el reto no viaja en claro; la pareja recibe el juego iniciado),
       **respuestas de juego cifradas**, **troceado de audio/vídeo (`file-*`)**,
-      **comparación de versiones**, **contenido ≥ 20 por nivel y por juego**,
-      **bloqueo y cofre** (sal/resumen del PIN, clave derivada, cofre ilegible
-      con clave equivocada), **chat estructurado** (citas, reacciones y
+      **envío por generador (`iterFileFrames` idéntico a `splitFile`) y topes
+      del ensamblador** (metas con trozos absurdos o índices fuera de rango se
+      ignoran), **comparación de versiones**, **contenido ≥ 20 por nivel y por
+      juego**, **bloqueo y cofre** (sal/resumen del PIN, clave derivada, cofre
+      ilegible con clave equivocada), **chat estructurado** (citas, reacciones y
       compatibilidad con texto plano) y **auto-destrucción** (plazos y
       filtrado), más una sesión completa sobre un "bus" en memoria que imita al
       broker.

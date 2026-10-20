@@ -6,7 +6,7 @@ import {
   useRef,
   useCallback,
 } from "react";
-import { AppState } from "react-native";
+import { AppState, Alert } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
 import { Relay } from "../services/relay";
@@ -25,8 +25,7 @@ import {
   buildAck,
   buildGame,
   readGame,
-  splitPhoto,
-  splitFile,
+  iterFileFrames,
   PhotoAssembler,
   readMsg,
 } from "../services/protocol";
@@ -84,6 +83,14 @@ const RETRY_INTERVAL = 12000;
 const GAME_BEACON_INTERVAL = 6000;
 const TTL_CHECK_INTERVAL = 60000;
 const TTL_KEY = "duo.retention.days";
+// Archivos: tope duro y ritmo de envío. Sin el tope, un vídeo grande leído
+// entero en base64 congelaba la app y podía cerrarla por memoria; sin la pausa
+// entre trozos, los ~170 trozos de un vídeo de 6 MB se publicaban de golpe y
+// bloqueaban la interfaz segundos.
+const MAX_FILE_BYTES = 6 * 1024 * 1024;
+const CHUNK_DELAY_MS = 20;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const mbOf = (bytes) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 
 export function P2PProvider({ children }) {
   const { session } = useSession();
@@ -101,6 +108,7 @@ export function P2PProvider({ children }) {
   const idsRef = useRef(new Set());
   const msgsRef = useRef([]);
   const loadedRef = useRef(false);
+  const sendingRef = useRef(new Set()); // filas con envío en curso (no re-lanzar)
   const typingTimer = useRef(null);
   const sessionRef = useRef(session);
   const keysRef = useRef(keys);
@@ -151,6 +159,14 @@ export function P2PProvider({ children }) {
         if (ttl) {
           const { keep, gone } = filterExpired(rows, ttl);
           rows = keep;
+          // La auto-destrucción borra también los archivos locales asociados.
+          for (const g of gone) {
+            if (g.uri) {
+              FileSystem.deleteAsync(g.uri, { idempotent: true }).catch(
+                () => {}
+              );
+            }
+          }
           if (gone.length) {
             vaultSet(msgsKey(coupleId), JSON.stringify(keep)).catch(() => {});
           }
@@ -234,6 +250,14 @@ export function P2PProvider({ children }) {
         setMessages((prev) => {
           const { keep, gone } = filterExpired(prev, ttl);
           if (!gone.length) return prev;
+          // La auto-destrucción borra también los archivos locales asociados.
+          for (const g of gone) {
+            if (g.uri) {
+              FileSystem.deleteAsync(g.uri, { idempotent: true }).catch(
+                () => {}
+              );
+            }
+          }
           persist(keep);
           return keep;
         });
@@ -522,28 +546,32 @@ export function P2PProvider({ children }) {
           try {
             const info = await FileSystem.getInfoAsync(row.uri);
             if (!info.exists) return false;
+            // Doble red de seguridad: no se lee en memoria nada que exceda el
+            // tope (al crear la fila ya se avisó con el peso real).
+            if (typeof info.size === "number" && info.size > MAX_FILE_BYTES) {
+              return false;
+            }
             const b64 = await FileSystem.readAsStringAsync(row.uri, {
               encoding: FileSystem.EncodingType.Base64,
             });
             const enc = encryptBytes(b64ToBytes(b64), priv, partnerPub);
             if (!enc) return false;
             const ext = extOf(row.uri, row.kind);
-            const frames = splitFile(
+            // Trozo a trozo con una pausa mínima entre envíos (generador: sin
+            // copiar el cifrado entero en memoria): la interfaz respira y el
+            // socket da tiempo a drenar. Antes el envío entero seguido
+            // congelaba la app durante segundos.
+            for (const f of iterFileFrames(
               row.id,
               row.kind,
               ext,
               enc.nonceB64,
               enc.cipherB64
-            );
-            let ok = true;
-            for (const f of frames) {
-              const sent = sendFrame(f);
-              if (!sent) {
-                ok = false;
-                break;
-              }
+            )) {
+              if (!sendFrame(f)) return false;
+              if (f.t === "file-chunk") await sleep(CHUNK_DELAY_MS);
             }
-            return ok;
+            return true;
           } catch {
             return false;
           }
@@ -556,13 +584,26 @@ export function P2PProvider({ children }) {
   );
 
   // Envía una fila pendiente y anota el resultado (el envío de archivos es
-  // asíncrono: se espera a que termine para marcar ✓ o ⭕).
+  // asíncrono y largo: se espera a que termine para marcar ✓ o ⭕). La guardia
+  // `sendingRef` impide que la cola de reintentos lance el mismo archivo por
+  // segunda vez mientras aún va en curso: antes duplicaba el envío y el
+  // receptor mezclaba trozos de dos cifrados distintos (vídeo corrupto).
   const dispatchRow = useCallback(
     (row) => {
+      if (sendingRef.current.has(row.id)) return false;
+      sendingRef.current.add(row.id);
+      const done = () => sendingRef.current.delete(row.id);
       const ok = sendFrameFor(row);
-      const settle = (r) => (r ? markSent(row.id) : markFailed(row.id));
+      const settle = (r) => {
+        done();
+        if (r) markSent(row.id);
+        else markFailed(row.id);
+      };
       if (ok && typeof ok.then === "function") {
-        return ok.then(settle).catch(() => markFailed(row.id));
+        return ok.then(settle).catch(() => {
+          done();
+          markFailed(row.id);
+        });
       }
       settle(ok);
       return ok;
@@ -574,6 +615,7 @@ export function P2PProvider({ children }) {
   // segundos mientras la app esté abierta y en línea).
   const retryMessage = useCallback(
     (id) => {
+      if (sendingRef.current.has(id)) return false; // ya se está enviando
       const row = msgsRef.current.find(
         (m) => m.id === id && m.from === "me" && m.pending
       );
@@ -655,7 +697,9 @@ export function P2PProvider({ children }) {
   );
 
   const flushOutbox = useCallback(() => {
-    const rows = msgsRef.current.filter((m) => m.from === "me" && m.pending);
+    const rows = msgsRef.current.filter(
+      (m) => m.from === "me" && m.pending && !sendingRef.current.has(m.id)
+    );
     for (const row of rows) {
       dispatchRow(row);
     }
@@ -686,8 +730,35 @@ export function P2PProvider({ children }) {
   );
 
   // Envía un archivo cifrado (foto, audio o vídeo) troceado por el relay.
+  // El tamaño se comprueba con el tamaño REAL del archivo (getInfoAsync, sin
+  // leerlo en memoria) ANTES de copiarlo o cifrarlo: un archivo grande leído
+  // entero en base64 congelaba la app y podía cerrarla por memoria.
   const sendMedia = useCallback(
     async (tmpUri, kind = "photo") => {
+      const info = await FileSystem.getInfoAsync(tmpUri).catch(() => null);
+      const size = info?.size ?? 0;
+      if (!info?.exists) {
+        Alert.alert(
+          "No se pudo leer el archivo",
+          "El archivo ya no está disponible. Prueba a elegirlo de nuevo."
+        );
+        return null;
+      }
+      if (size > MAX_FILE_BYTES) {
+        Alert.alert(
+          "Archivo demasiado grande",
+          `${
+            kind === "video"
+              ? "El vídeo"
+              : kind === "audio"
+              ? "La nota de voz"
+              : "El archivo"
+          } pesa ${mbOf(size)} y el máximo para enviar son 6 MB. ${
+            kind === "video" ? "Recórtalo" : "Elige uno más pequeño"
+          } e inténtalo de nuevo.`
+        );
+        return null;
+      }
       const id = `m_${randomId()}`;
       const ext = extOf(tmpUri, kind);
       const dest = `${FileSystem.documentDirectory}duo_send_${id}.${ext}`;
@@ -703,7 +774,7 @@ export function P2PProvider({ children }) {
         failed: false,
       };
       appendMessage(row);
-      await dispatchRow(row);
+      dispatchRow(row);
       return row;
     },
     [appendMessage, dispatchRow]
@@ -792,6 +863,7 @@ export function P2PProvider({ children }) {
           priv,
           partnerPub
         );
+        done.cipherB64 = null; // liberar en seguida la cadena grande
         if (vaultIsReady()) sendFrame(buildAck(frame.id));
         if (!plain) return;
         const dest = `${FileSystem.documentDirectory}duo_${done.id}.${done.ext}`;

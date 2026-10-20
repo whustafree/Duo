@@ -309,32 +309,10 @@ export default function ChatScreen() {
     }
   };
 
-  const mb = (bytes) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-
-  // Los vídeos van troceados como las fotos; avisamos si pesa mucho porque
-  // un archivo grande puede tardar bastante por el relay público.
-  const sendVideoUri = async (uri, fileSize) => {
-    if (fileSize && fileSize > 6 * 1024 * 1024) {
-      Alert.alert(
-        "Vídeo pesado",
-        `Pesa ${mb(fileSize)}. Se enviará igual, pero puede tardar y gastar datos. ¿Seguro?`,
-        [
-          { text: "Cancelar", style: "cancel" },
-          {
-            text: "Enviar",
-            onPress: async () => {
-              try {
-                await sendVideo(uri);
-                scrollDown();
-              } catch (e) {
-                Alert.alert("No se pudo enviar el vídeo", e?.message || "");
-              }
-            },
-          },
-        ]
-      );
-      return;
-    }
+  // Los vídeos van troceados como las fotos. El tope de 6 MB se comprueba
+  // dentro de `sendMedia` con el tamaño REAL del archivo (sin leerlo en
+  // memoria): si pesa más, se avisa y no se envía.
+  const sendVideoUri = async (uri) => {
     await sendVideo(uri);
     scrollDown();
   };
@@ -353,7 +331,7 @@ export default function ChatScreen() {
     if (result.canceled) return;
     const a = result.assets[0];
     try {
-      await sendVideoUri(a.uri, a.fileSize);
+      await sendVideoUri(a.uri);
     } catch (e) {
       Alert.alert("No se pudo enviar el vídeo", e?.message || "");
     }
@@ -367,7 +345,7 @@ export default function ChatScreen() {
     if (result.canceled) return;
     const a = result.assets[0];
     try {
-      await sendVideoUri(a.uri, a.fileSize);
+      await sendVideoUri(a.uri);
     } catch (e) {
       Alert.alert("No se pudo enviar el vídeo", e?.message || "");
     }

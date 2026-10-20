@@ -99,6 +99,20 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
       el `latest` de GitHub Releases; `UpdateModal` al abrir la app o volver a
       primer plano, con **cooldown de 6 horas** y sin insistir con una versión ya
       descartada; botón que abre la descarga (`…/releases/latest/download/duo.apk`).
+- [x] **Estabilidad del envío de archivos** (v0.7.1, auditoría tras el reporte
+      de que enviar un vídeo congelaba la app y generaba errores): **tope duro
+      de 6 MB** comprobado con el tamaño real (`FileSystem.getInfoAsync`, sin
+      leer el archivo en memoria) y **rechazo con aviso claro** si pesa más;
+      envío **paginado trozo a trozo** con `iterFileFrames` (generador con ~20
+      ms de pausa entre tramas: la interfaz respira y el socket drena; antes
+      los ~170 trozos se publicaban en bucle síncrono y bloqueaban la app);
+      **guardia de envío en curso** (`sendingRef` en `dispatchRow`/
+      `flushOutbox`/`retryMessage`: la cola de reintentos no relanza un
+      archivo a medio enviar — antes duplicaba la transmisión y el receptor
+      mezclaba trozos de dos cifrados distintos → vídeo corrupto que nunca
+      aparecía); receptor con **topes** (`MAX_FILE_CHUNKS` e índices de trozo
+      válidos); auto-destrucción que **borra también los archivos locales**
+      caducados; tests **141 → 146**.
 - [x] **Estados de entrega en el chat** (v0.7.0): ⏳ en cola, ✓ enviado al
       relay, ✓✓ confirmado por la pareja y ⭕ con **reintento manual**
       (`retryMessage`); la bandeja reintenta sola cada 12 s. Burbuja con la
@@ -131,12 +145,13 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
 - [x] Cifrado E2E: X25519 + HKDF-SHA256 + AES-256-GCM, módulos `@noble/*`.
 - [x] Polyfill `crypto.getRandomValues` con RNG nativo (`expo-crypto`), cargado
       **antes** que cualquier otro módulo (`index.js`).
-- [x] Pruebas: `duo-app/test/duo-test.mjs` → **`npm test`**, **141
+- [x] Pruebas: `duo-app/test/duo-test.mjs` → **`npm test`**, **146
       verificaciones, 0 fallos** (identidad/SAS, encuadre, auth E2E, QR v2,
       temas/sobre del relay, mensajes, fotos, **cifrado del estado del juego**
       —un tercero no lo descifra y el reto no viaja en claro; la pareja recibe el
       juego iniciado—, **respuestas de juego cifradas**, **troceado de audio/vídeo
-      `file-*`**, **comparación de versiones**, **contenido ≥ 20 por nivel y por
+      `file-*`** con **generador `iterFileFrames` y topes del ensamblador**,
+      **comparación de versiones**, **contenido ≥ 20 por nivel y por
       juego**, **bloqueo y cofre** (sal/resumen del PIN, clave derivada, cofre
       ilegible con clave equivocada), **chat estructurado** (citas, reacciones,
       compatibilidad con texto plano), **auto-destrucción** (plazos y filtrado) y
@@ -158,7 +173,7 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
 > Nota (20/10/2026): durante la sesión de v0.7.0 la carpeta `DuoProyecto`
 > desapareció del escritorio con los cambios **sin commitear**; se **reclonó
 > el repo desde GitHub** (base `676b9ac`, v0.6.0) y se **reaplicaron todos los
-> cambios** desde el contexto de la sesión, verificados con tests (141/0) y
+> cambios** desde el contexto de la sesión, verificados con tests (146/0) y
 > bundle antes de commitear.
 
 ### Pendiente
@@ -209,7 +224,7 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
 | `duo-app/src/services/retention.js` | **Puro** (v0.7.0): auto-destrucción local — `TTL_OPTIONS` (Nunca/7/30/90), `parseTtlDays`, `isExpired`, `filterExpired`. |
 | `duo-app/src/services/applock.js` | (v0.7.0) Bloqueo: `loadLockState`, `setupPin` (resumen con sal), `unlockWithPin`/`unlockWithBio`, huella (`setBioEnabled`/`enableBioOnly`), avisos ocultos, pantalla discreta, `onLockStateChange`. Con cifrado activo entrega la clave al cofre al desbloquear. |
 | `duo-app/src/services/localvault.js` | (v0.7.0) Cofre de la copia local: `vaultGet`/`vaultSet`/`vaultRemove` cifrados con AES-GCM cuando hay clave; espera con `vaultReady()` y no escribe en claro si el modo aún no se conoce; `vaultIsReady()` para el gate de ACKs; `onVaultChange` para reescribir al cambiar de modo. |
-| `duo-app/src/context/P2PContext.js` | Capa React: historial local (`duo.msgs.<coupleId>`), bandeja de salida, envío/recepción de **archivos** (fotos, audio y vídeo por `file-meta`/`file-chunk`, ensamblados con `PhotoAssembler`), acks/dedup, typing, notificaciones en 2.º plano, API de pareo, **estado del juego compartido** (`gameSession`, `startGame`, `setGameLevel`, `drawGame`, **`sendGameReply`** (hilo `GameThread`), `endGame`, `incomingGame`, `clearIncomingGame`; baliza cada 6 s **que incluye el hilo de respuestas**) y **borrado** (`clearHistory`, `deleteStoredPhotos`, `wipeAllContent`). Reintento periódico cada 12 s (`flushOutbox` en `flushRef`). **v0.7.0**: historial por el **cofre** (`vaultGet`/`vaultSet`), **estados ✓/✓✓/⭕** (`markSent`/`markFailed`/`retryMessage`), **`sendReaction`** y citas (`sendText(text, replyTo)` con `decodeChat` al recibir), **ACK suprimido con el cofre cerrado**, avisos ocultos y **limpieza por retención** cada minuto. |
+| `duo-app/src/context/P2PContext.js` | Capa React: historial local (`duo.msgs.<coupleId>`), bandeja de salida, envío/recepción de **archivos** (fotos, audio y vídeo por `file-meta`/`file-chunk`, ensamblados con `PhotoAssembler`), acks/dedup, typing, notificaciones en 2.º plano, API de pareo, **estado del juego compartido** (`gameSession`, `startGame`, `setGameLevel`, `drawGame`, **`sendGameReply`** (hilo `GameThread`), `endGame`, `incomingGame`, `clearIncomingGame`; baliza cada 6 s **que incluye el hilo de respuestas**) y **borrado** (`clearHistory`, `deleteStoredPhotos`, `wipeAllContent`). Reintento periódico cada 12 s (`flushOutbox` en `flushRef`). **v0.7.0**: historial por el **cofre** (`vaultGet`/`vaultSet`), **estados ✓/✓✓/⭕** (`markSent`/`markFailed`/`retryMessage`), **`sendReaction`** y citas (`sendText(text, replyTo)` con `decodeChat` al recibir), **ACK suprimido con el cofre cerrado**, avisos ocultos y **limpieza por retención** cada minuto. **v0.7.1**: **tope de 6 MB por archivo** (aviso sin leer en memoria), envío **paginado con `iterFileFrames`** y guardia **`sendingRef`** (sin dobles envíos), borrado de archivos caducados. |
 | `duo-app/src/context/E2EContext.js` | Expone las claves del dispositivo; `peerPub` = `session.partnerPub`. |
 | `duo-app/src/screens/OnboardingScreen.js` | Un solo flujo de vínculo: `welcome` (crear / escanear / pegar + **«📲 Enviar el enlace de descarga a mi pareja»**), `create` (QR de 240 px + «📤 Compartir el código» vía `Share`), `paste`, `scan` y `joining` (spinner + SAS). |
 | `duo-app/src/screens/ChatScreen.js` | Chat sobre `useP2P()` (sin api/socket). Texto, fotos (galería o cámara), notas de voz y vídeos cortos; fotos con `expo-image-manipulator` (1280 px, JPEG 0.7) antes de cifrar. Audio/vídeo van por `file-meta`/`file-chunk` y se reproducen en burbujas (audio play/pausa, vídeo con visor a pantalla completa). El botón del candado explica el cifrado. **v0.7.0**: marcas ⏳/⭕/✓/✓✓ (con reintento manual), **hoja de reacciones y responder** al mantener pulsado, barra de cita y vista previa del citado. |
@@ -217,7 +232,7 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
 | `duo-app/src/components/LockScreen.js` | (v0.7.0) Pad numérico PIN (4-6 dígitos): `mode="unlock"` (con huella si no hay PIN; «¿Olvidaste el PIN?» borra la copia local) y `mode="create"` (introduce + confirma) para el Perfil. |
 | `duo-app/src/components/StealthScreen.js` | (v0.7.0) Vista falsa de «Notas» que tapa la app al ir a segundo plano (pantalla discreta). |
 | `duo-app/src/screens/ProfileScreen.js` | Perfil con **datos reales** (nº de mensajes/fotos), invitación + enlace de descarga y **borrado** (historial, fotos, todo) + desvincular, todo con confirmación. **v0.7.0**: sección «Privacidad de la app» (PIN/huella/avisos ocultos/pantalla discreta/auto-destrucción), modal de creación de PIN (`LockScreen mode="create"`) y código de verificación con «✓ Comprobado». |
-| `duo-app/test/duo-test.mjs` | Pruebas (**141 verificaciones, 0 fallos**): copia `cryptocore.js`/`protocol.js`/`relayproto.js`/`version.js`/`chatcodec.js`/`retention.js` a temporales `.mjs` y los importa en Node; incluye cifrado del estado del juego, respuestas de juego cifradas, troceado de audio/vídeo (`file-*`), comparación de versiones, contenido ≥ 20 por nivel y por juego, **bloqueo/cofre, chat estructurado y auto-destrucción**, y una sesión completa sobre un "bus" en memoria que imita al broker. |
+| `duo-app/test/duo-test.mjs` | Pruebas (**146 verificaciones, 0 fallos**): copia `cryptocore.js`/`protocol.js`/`relayproto.js`/`version.js`/`chatcodec.js`/`retention.js` a temporales `.mjs` y los importa en Node; incluye cifrado del estado del juego, respuestas de juego cifradas, troceado de audio/vídeo (`file-*`) con generador `iterFileFrames` y topes del ensamblador, comparación de versiones, contenido ≥ 20 por nivel y por juego, **bloqueo/cofre, chat estructurado y auto-destrucción**, y una sesión completa sobre un "bus" en memoria que imita al broker. |
 
 ### Flujo de vínculo (QR / código)
 
@@ -321,7 +336,7 @@ Payload:         { k: "start"|"level"|"draw"|"reply"|"sync"|"end", gameId, level
 ```bash
 cd duo-app
 npm install
-npm test              # 141 verificaciones (protocolo + relay + cifrado E2E + juego + archivos + versiones + bloqueo + chat estructurado + auto-destrucción)
+npm test              # 146 verificaciones (protocolo + relay + cifrado E2E + juego + archivos + versiones + bloqueo + chat estructurado + auto-destrucción)
 npx expo start
 ```
 
@@ -431,7 +446,7 @@ npx eas build -p android --profile preview
 
 ```bash
 cd C:\Users\whustaf\Desktop\DuoProyecto\duo-app
-npm test                          # protocolo + relay (141 ok)
+npm test                          # protocolo + relay (146 ok)
 npx expo export --platform android --output-dir dist   # bundle Metro
 ```
 
@@ -475,5 +490,14 @@ node -e "const b=require('@babel/core'),fs=require('fs'),p=require('path');const
     SAS; permisos `USE_BIOMETRIC`/`POST_NOTIFICATIONS`, deps `expo-notifications`
     + `expo-local-authentication` y tests a **141 verificaciones, 0 fallos**
     (bundle Hermes Android 4.23 MB; app `0.7.0`, versionCode `7`).
+    **Publicada.**
+  - `v0.7.1` — **estabilidad del envío de archivos** (auditoría tras el reporte
+    de vídeos que congelaban la app): **tope duro de 6 MB** con aviso (tamaño
+    real vía `getInfoAsync`, sin leer en memoria), envío **trozo a trozo con
+    pausa** (`iterFileFrames`, generador), **guardia de envío en curso**
+    (sin duplicados que corrupten el ensamblado), receptor blindado contra
+    metas/trozos fuera de rango y auto-destrucción que **borra también los
+    archivos locales**; tests **146 verificaciones, 0 fallos** (bundle Hermes
+    Android 4.23 MB; app `0.7.1`, versionCode `8`).
 - Tras cambiar dependencias: commit + push y la CI (Actions → Build APK)
   compila y sube el artefacto; descargarlo y publicarlo en el Release.

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Duo",
     "slug": "duo-app",
-    "version": "0.7.0",
+    "version": "0.7.1",
     "orientation": "portrait",
     "scheme": "duoapp",
     "userInterfaceStyle": "dark",
@@ -18,7 +18,7 @@
     },
     "android": {
       "package": "com.duo.app",
-      "versionCode": 7,
+      "versionCode": 8,
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.CAMERA",

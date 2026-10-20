@@ -451,6 +451,74 @@ async function main() {
       "el troceado de fotos sigue funcionando igual"
     );
 
+    // Envío paginado (v0.7.1): el generador produce EXACTAMENTE las mismas
+    // tramas que el array completo, para enviar trozo a trozo sin congelar.
+    const genFrames = [
+      ...P.iterFileFrames(
+        "m_gen",
+        "video",
+        "mp4",
+        encAV.nonceB64,
+        encAV.cipherB64,
+        48000
+      ),
+    ];
+    const arrFrames = P.splitFile(
+      "m_gen",
+      "video",
+      "mp4",
+      encAV.nonceB64,
+      encAV.cipherB64,
+      48000
+    );
+    ok(
+      genFrames.length === arrFrames.length &&
+        genFrames.every(
+          (f, i) => f.t === arrFrames[i].t && f.d === arrFrames[i].d
+        ),
+      "iterFileFrames produce las mismas tramas que splitFile"
+    );
+    ok(
+      P.MAX_FILE_CHUNKS * P.PHOTO_CHUNK >=
+        Math.ceil((6 * 1024 * 1024 * 4) / 3),
+      "el tope de trozos cubre el cifrado de un archivo de 6 MB"
+    );
+    const bombAssembler = new P.PhotoAssembler();
+    ok(
+      bombAssembler.accept({
+        t: "file-meta",
+        id: "m_bomb",
+        kind: "video",
+        nonceB64: encAV.nonceB64,
+        chunks: 999999999,
+      }) === null,
+      "una meta con trozos absurdos se descarta (no cuelga el receptor)"
+    );
+    ok(
+      bombAssembler.accept({ t: "file-chunk", id: "m_bomb", i: 0, d: "xxxx" }) ===
+        null,
+      "sin meta válida, los trozos sueltos se ignoran"
+    );
+    const idxAssembler = new P.PhotoAssembler();
+    idxAssembler.accept({
+      t: "file-meta",
+      id: "m_idx",
+      kind: "photo",
+      nonceB64: encAV.nonceB64,
+      chunks: 2,
+    });
+    ok(
+      idxAssembler.accept({ t: "file-chunk", id: "m_idx", i: 5, d: "aaaa" }) ===
+        null &&
+        idxAssembler.accept({
+          t: "file-chunk",
+          id: "m_idx",
+          i: -1,
+          d: "bbbb",
+        }) === null,
+      "trozos con índice fuera de rango se ignoran"
+    );
+
     console.log("\n7) Sesión completa por el relay (bus en memoria)");
     const bus = makeBus();
     const devA = makeDevice("A", "Ana", "🐼", A, bus, R);

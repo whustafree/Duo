@@ -24,14 +24,14 @@ Funciona **desde cualquier red** (misma WiFi o datos móviles, NAT estricto
 incluido).
 
 - Repo: https://github.com/whustafree/Duo (APKs en Releases; CI en Actions).
-- Estado: `npm test` 141/141, `npx expo export` verde (bundle Metro Android, Hermes 4.23 MB).
-  Última release publicada: **v0.7.0** (20/10/2026).
+- Estado: `npm test` 146/146, `npx expo export` verde (bundle Metro Android, Hermes 4.23 MB).
+  Última release publicada: **v0.7.1** (20/10/2026).
 
 ## Comandos
 
 ```bash
 npm install
-npm test              # duo-app/test/duo-test.mjs (Node puro, sin device; 141 verificaciones)
+npm test              # duo-app/test/duo-test.mjs (Node puro, sin device; 146 verificaciones)
 npx expo start        # desarrollo JS
 npx expo export --platform android --output-dir dist   # prueba de bundle
 ```
@@ -88,7 +88,7 @@ src/screens/
 src/components/ChallengeDeck.js  # base de juegos con estado compartido + «Terminar juego»
 src/components/LockScreen.js     # pad numérico PIN (crear/desbloquear) + huella
 src/components/StealthScreen.js  # pantalla discreta: falsa «Notas»
-test/duo-test.mjs         # 141 verificaciones (incluye bloqueo/cofre, chat
+test/duo-test.mjs         # 146 verificaciones (incluye bloqueo/cofre, chat
                           #   estructurado, auto-destrucción, juego y versiones)
 ```
 
@@ -124,10 +124,18 @@ test/duo-test.mjs         # 141 verificaciones (incluye bloqueo/cofre, chat
    (invirtiendo la perspectiva del citado). Un JSON sin marca o con versión
    desconocida se muestra como texto normal. Las reacciones se guardan por
    mensaje con su lado (mía / de la pareja).
-8. **Archivos (foto/audio/vídeo)**: cifrar SIEMPRE en origen; trocear en chunks
-   de 48000 chars de base64; tramas `file-meta`/`file-chunk` con `kind`
-   (photo/audio/video) y `ext`; el ensamblador (`PhotoAssembler`) deduplica por
-   `id`.
+8. **Archivos (foto/audio/vídeo)**: cifrar SIEMPRE en origen; **tope duro de
+   6 MB** (`MAX_FILE_BYTES` en `P2PContext`, comprobado con el tamaño REAL
+   antes de leer nada en memoria — si pesa más se avisa y no se envía);
+   trocear en chunks de 48000 chars de base64 y enviar **con el generador
+   `iterFileFrames` y ~20 ms de pausa entre tramas** (nunca construir el
+   array entero ni publicar en bucle síncrono: congela la interfaz); tramas
+   `file-meta`/`file-chunk` con `kind` (photo/audio/video) y `ext`; el
+   ensamblador (`PhotoAssembler`) deduplica por `id`, **descarta metas con
+   trozos fuera de rango** (`MAX_FILE_CHUNKS`) e índices inválidos; y una fila
+   con envío en curso (`sendingRef`) **no se relanza** desde la cola de
+   reintentos (duplicar la transmisión corrupta el ensamblado: dos nonces
+   distintos mezclados).
 9. **QR de vínculo v2** (5 campos, corto y sin direcciones):
    `duo:pair:v2:<pub_b64url>:<ps_b64url>`. `parsePairQr()` (en `relayproto.js`,
    puro) devuelve `null` con cualquier otra cosa, incluido el QR antiguo de 7
@@ -221,7 +229,7 @@ inmediato al volver la app a primer plano.
 ## Verificación antes de dar por bueno un cambio
 
 ```bash
-npm test                          # 141 ok
+npm test                          # 146 ok
 npx expo export --platform android --output-dir dist   # bundle ok
 ```
 
