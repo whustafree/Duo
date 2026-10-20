@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -7,16 +8,30 @@ import {
   Alert,
   Share,
   Linking,
+  Modal,
 } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing } from "../theme";
 import Avatar from "../components/Avatar";
+import LockScreen from "../components/LockScreen";
 import { useSession } from "../context/SessionContext";
 import { useE2E } from "../context/E2EContext";
 import { useP2P } from "../context/P2PContext";
 import { verificationCode } from "../services/cryptocore";
+import {
+  lockState,
+  onLockStateChange,
+  setupPin,
+  enableBioOnly,
+  setBioEnabled,
+  disableLock,
+  setHiddenNotifications,
+  setStealth,
+} from "../services/applock";
+import { TTL_OPTIONS, parseTtlDays } from "../services/retention";
 import { INVITE_MESSAGE, APP_DOWNLOAD_URL } from "../config";
 
 function Stat({ value, label }) {
@@ -86,6 +101,24 @@ export default function ProfileScreen({ navigation }) {
     linked && keys?.publicKeyB64 && session?.partnerPub
       ? verificationCode(keys.publicKeyB64, session.partnerPub)
       : "—";
+
+  // Ajustes de bloqueo y retención de ESTE teléfono.
+  const [lock, setLock] = useState(() => ({ ...lockState() }));
+  const [ttlDays, setTtlDays] = useState(0);
+  const [pinModal, setPinModal] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    AsyncStorage.getItem("duo.retention.days").then((raw) => {
+      if (alive) setTtlDays(parseTtlDays(raw));
+    });
+    setLock({ ...lockState() });
+    const off = onLockStateChange(() => setLock({ ...lockState() }));
+    return () => {
+      alive = false;
+      off();
+    };
+  }, []);
 
   const photos = messages.filter((m) => m.kind === "photo").length;
 
@@ -180,6 +213,96 @@ export default function ProfileScreen({ navigation }) {
     );
   };
 
+  // ------------------------------------------------- privacidad de la app --
+  const disablePinFlow = () => {
+    Alert.alert(
+      "Desactivar el bloqueo",
+      lock.encrypt
+        ? "Se quitará el PIN y la huella. Tu copia local de mensajes quedará sin cifrar en este teléfono."
+        : "Se quitará el PIN y la huella.",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Desactivar",
+          style: "destructive",
+          onPress: async () => {
+            await disableLock();
+          },
+        },
+      ]
+    );
+  };
+
+  const toggleBio = async () => {
+    if (lock.encrypt) {
+      Alert.alert(
+        "Huella y cifrado",
+        "Mientras tu copia local esté cifrada con el PIN, la huella no puede abrirla " +
+          "(sin el PIN no existe la clave). Si quieres usar la huella, desactiva el " +
+          "bloqueo y créalo otra vez eligiendo «PIN + huella»."
+      );
+      return;
+    }
+    if (!lock.pin && !lock.bio) {
+      await enableBioOnly();
+      return;
+    }
+    await setBioEnabled(!lock.bio);
+  };
+
+  const pickTtl = () => {
+    Alert.alert(
+      "Auto-destrucción",
+      "Los mensajes de ESTE teléfono se borran solos al cumplir el plazo. " +
+        "La copia de tu pareja no se toca.",
+      [
+        { text: "Cancelar", style: "cancel" },
+        ...TTL_OPTIONS.map((o) => ({
+          text: o.label,
+          onPress: async () => {
+            await AsyncStorage.setItem("duo.retention.days", String(o.days));
+            setTtlDays(o.days);
+          },
+        })),
+      ]
+    );
+  };
+
+  // Tras crear el PIN: elegir si la huella también abre (sin cifrado) o si la
+  // copia local queda cifrada con el PIN.
+  const onPinCreated = (pin) => {
+    setPinModal(false);
+    const hadEncrypt = !!lock.encrypt;
+    Alert.alert(
+      "¿Usar también la huella?",
+      "Con «Solo PIN» tu copia de mensajes queda cifrada en este teléfono. " +
+        "Con «PIN + huella» abrirás con el dedo, pero la copia no podrá ir cifrada " +
+        "(sin el PIN no hay clave).",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Solo PIN (cifrar)",
+          onPress: async () => {
+            await setupPin(pin, { bio: false, encrypt: true });
+            if (hadEncrypt) await clearHistory();
+            Alert.alert(
+              "Listo 🔒",
+              "Tu PIN está activo y la copia local va cifrada."
+            );
+          },
+        },
+        {
+          text: "PIN + huella",
+          onPress: async () => {
+            await setupPin(pin, { bio: true, encrypt: false });
+            if (hadEncrypt) await clearHistory();
+            Alert.alert("Listo 👆", "Podrás abrir Duo con tu huella.");
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <StatusBar style="light" />
@@ -214,12 +337,15 @@ export default function ProfileScreen({ navigation }) {
           <Row
             icon="key"
             label="Código de verificación"
-            value={code}
+            value={linked ? `${code} ✓` : code}
             onPress={() =>
               Alert.alert(
                 "Código de verificación",
                 `Debe ser el mismo en los dos teléfonos: ${code}\n\n` +
-                  "Si no coinciden, no estáis vinculados con la persona correcta."
+                  (linked
+                    ? "✓ Comprobado: si los dos teléfonos enseñan el mismo código con la marca ✓, " +
+                      "sois la pareja correcta."
+                    : "Si no coinciden, no estáis vinculados con la persona correcta.")
               )
             }
           />
@@ -246,6 +372,43 @@ export default function ProfileScreen({ navigation }) {
                   "así que funciona desde cualquier red, aunque estéis lejos."
               )
             }
+          />
+        </View>
+
+        <Text style={styles.section}>Privacidad de la app</Text>
+        <View style={styles.card}>
+          <Row
+            icon="key"
+            label="Bloqueo con PIN"
+            value={lock.pin ? "Activado" : "Desactivado"}
+            onPress={() => (lock.pin ? disablePinFlow() : setPinModal(true))}
+          />
+          <Row
+            icon="finger-print"
+            label="Abrir con huella"
+            value={lock.bio ? "Sí" : "No"}
+            onPress={toggleBio}
+          />
+          <Row
+            icon="notifications-off"
+            label="Avisos ocultos"
+            value={lock.hidden ? "Sí" : "No"}
+            onPress={() => setHiddenNotifications(!lock.hidden)}
+          />
+          <Row
+            icon="eye-off"
+            label="Pantalla discreta"
+            value={lock.stealth ? "Sí" : "No"}
+            onPress={() => setStealth(!lock.stealth)}
+          />
+          <Row
+            icon="hourglass"
+            label="Auto-destrucción"
+            value={
+              (TTL_OPTIONS.find((o) => o.days === ttlDays) || TTL_OPTIONS[0])
+                .label
+            }
+            onPress={pickTtl}
           />
         </View>
 
@@ -288,6 +451,24 @@ export default function ProfileScreen({ navigation }) {
           <Text style={styles.logoutText}>Desvincular</Text>
         </Pressable>
       </ScrollView>
+
+      {/* Crear o cambiar el PIN (teclado del propio componente de bloqueo) */}
+      <Modal
+        visible={pinModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setPinModal(false)}
+      >
+        <View style={styles.modalBack}>
+          <View style={styles.modalCard}>
+            <LockScreen
+              mode="create"
+              onCancel={() => setPinModal(false)}
+              onDone={onPinCreated}
+            />
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -356,4 +537,15 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   logoutText: { color: colors.primary, fontSize: 16, fontWeight: "700" },
+  modalBack: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    justifyContent: "center",
+  },
+  modalCard: {
+    marginHorizontal: spacing.md,
+    borderRadius: radius.lg,
+    overflow: "hidden",
+    backgroundColor: colors.bg,
+  },
 });

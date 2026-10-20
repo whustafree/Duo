@@ -35,6 +35,17 @@ import {
   requestNotificationPermission,
   notifyNewMessage,
 } from "../services/notifications";
+import { decodeChat, encodeText, encodeReaction } from "../services/chatcodec";
+import { filterExpired, parseTtlDays } from "../services/retention";
+import { shouldHideContent } from "../services/applock";
+import {
+  vaultGet,
+  vaultSet,
+  vaultRemove,
+  onVaultChange,
+  vaultReady,
+  vaultIsReady,
+} from "../services/localvault";
 
 // Orquesta el chat, los juegos y el transporte "relay": los dos teléfonos hablan
 // a través de un broker MQTT público que solo hace de cartero. TODO va cifrado de
@@ -71,6 +82,8 @@ function log(...args) {
 
 const RETRY_INTERVAL = 12000;
 const GAME_BEACON_INTERVAL = 6000;
+const TTL_CHECK_INTERVAL = 60000;
+const TTL_KEY = "duo.retention.days";
 
 export function P2PProvider({ children }) {
   const { session } = useSession();
@@ -87,6 +100,7 @@ export function P2PProvider({ children }) {
   const assemblerRef = useRef(new PhotoAssembler());
   const idsRef = useRef(new Set());
   const msgsRef = useRef([]);
+  const loadedRef = useRef(false);
   const typingTimer = useRef(null);
   const sessionRef = useRef(session);
   const keysRef = useRef(keys);
@@ -107,28 +121,43 @@ export function P2PProvider({ children }) {
   statusRef.current = status;
   gameRef.current = gameSession;
 
+  // La copia local pasa por el cofre: si hay PIN con cifrado activo, se guarda
+  // cifrada; si no, en claro (mismo formato que antes).
   const persist = useCallback((rows) => {
     const cid = sessionRef.current?.coupleId;
     if (!cid) return;
-    AsyncStorage.setItem(msgsKey(cid), JSON.stringify(rows.slice(-300))).catch(
-      () => {}
-    );
+    vaultSet(msgsKey(cid), JSON.stringify(rows.slice(-300))).catch(() => {});
   }, []);
 
+  // Carga la copia local al emparejar. Si el bloqueo tiene cifrado activo,
+  // esperamos a que se introduzca el PIN (vaultReady) antes de leer: mientras
+  // tanto la copia no se toca. Después, la retención decide cuánto dura cada
+  // mensaje en ESTE teléfono (el otro puede tener otra política).
   useEffect(() => {
     let alive = true;
     (async () => {
       if (!coupleId) {
         idsRef.current = new Set();
         setMessages([]);
+        loadedRef.current = false;
         return;
       }
       try {
-        const raw = await AsyncStorage.getItem(msgsKey(coupleId));
+        await vaultReady();
+        const raw = await vaultGet(msgsKey(coupleId));
         if (!alive) return;
-        const rows = raw ? JSON.parse(raw) : [];
+        let rows = raw ? JSON.parse(raw) : [];
+        const ttl = parseTtlDays(await AsyncStorage.getItem(TTL_KEY));
+        if (ttl) {
+          const { keep, gone } = filterExpired(rows, ttl);
+          rows = keep;
+          if (gone.length) {
+            vaultSet(msgsKey(coupleId), JSON.stringify(keep)).catch(() => {});
+          }
+        }
         idsRef.current = new Set(rows.map((r) => r.id));
         setMessages(rows);
+        loadedRef.current = true;
       } catch {
         if (alive) setMessages([]);
       }
@@ -137,6 +166,15 @@ export function P2PProvider({ children }) {
       alive = false;
     };
   }, [coupleId]);
+
+  // Al cambiar de modo (activar/desactivar el cifrado del cofre) reescribimos
+  // la copia con el modo nuevo.
+  useEffect(() => {
+    return onVaultChange(() => {
+      const cid = sessionRef.current?.coupleId;
+      if (cid && loadedRef.current) persist(msgsRef.current);
+    });
+  }, [persist]);
 
   useEffect(() => {
     configureNotifications();
@@ -183,6 +221,26 @@ export function P2PProvider({ children }) {
     }, RETRY_INTERVAL);
     return () => clearInterval(iv);
   }, []);
+
+  // Auto-destrucción local: cada minuto comprobamos la retención elegida y
+  // borramos lo vencido (solo de ESTE teléfono).
+  useEffect(() => {
+    const iv = setInterval(async () => {
+      const cid = sessionRef.current?.coupleId;
+      if (!cid || !loadedRef.current) return;
+      try {
+        const ttl = parseTtlDays(await AsyncStorage.getItem(TTL_KEY));
+        if (!ttl) return;
+        setMessages((prev) => {
+          const { keep, gone } = filterExpired(prev, ttl);
+          if (!gone.length) return prev;
+          persist(keep);
+          return keep;
+        });
+      } catch {}
+    }, TTL_CHECK_INTERVAL);
+    return () => clearInterval(iv);
+  }, [persist]);
 
   // Baliza del juego: si somos los anfitriones, repetimos el estado cada pocos
   // segundos para que la pareja lo vea aunque se pierda algún mensaje.
@@ -231,11 +289,45 @@ export function P2PProvider({ children }) {
     [persist]
   );
 
+  // Estados de entrega: ✓ (publicado en el relay) y ✓✓ (la pareja confirmó).
+  // Si el envío falla, el mensaje queda con ⭕ para poder reintentarlo a mano.
+  const markSent = useCallback(
+    (id) => {
+      setMessages((prev) => {
+        const next = prev.map((m) =>
+          m.id === id && m.pending && (m.failed || !m.sent)
+            ? { ...m, sent: true, failed: false }
+            : m
+        );
+        persist(next);
+        return next;
+      });
+    },
+    [persist]
+  );
+
+  const markFailed = useCallback(
+    (id) => {
+      setMessages((prev) => {
+        const next = prev.map((m) =>
+          m.id === id && m.pending && !m.failed ? { ...m, failed: true } : m
+        );
+        persist(next);
+        return next;
+      });
+    },
+    [persist]
+  );
+
+  // Aviso de mensaje nuevo. Si la pareja pidió avisos ocultos (o la app está
+  // bloqueada), el contenido no se enseña: solo que hay mensaje.
   const notifyIfBackground = useCallback((body) => {
     if (AppState.currentState !== "active") {
+      const hide = shouldHideContent() || !vaultIsReady();
       notifyNewMessage({
         title: sessionRef.current?.partnerName || "Mi Amor 💞",
         body,
+        hidden: hide,
       });
     }
   }, []);
@@ -457,35 +549,140 @@ export function P2PProvider({ children }) {
           }
         })();
       }
-      const msgFrame = buildMsg(row.id, row.text, priv, partnerPub);
+      const msgFrame = buildMsg(row.id, row.body ?? row.text, priv, partnerPub);
       return sendFrame(msgFrame);
     },
     [priv, partnerPub, sendFrame]
   );
 
+  // Envía una fila pendiente y anota el resultado (el envío de archivos es
+  // asíncrono: se espera a que termine para marcar ✓ o ⭕).
+  const dispatchRow = useCallback(
+    (row) => {
+      const ok = sendFrameFor(row);
+      const settle = (r) => (r ? markSent(row.id) : markFailed(row.id));
+      if (ok && typeof ok.then === "function") {
+        return ok.then(settle).catch(() => markFailed(row.id));
+      }
+      settle(ok);
+      return ok;
+    },
+    [sendFrameFor, markSent, markFailed]
+  );
+
+  // Reintento manual desde la burbuja (la cola también reenvía sola cada pocos
+  // segundos mientras la app esté abierta y en línea).
+  const retryMessage = useCallback(
+    (id) => {
+      const row = msgsRef.current.find(
+        (m) => m.id === id && m.from === "me" && m.pending
+      );
+      if (!row) return false;
+      setMessages((prev) => {
+        const next = prev.map((m) =>
+          m.id === id ? { ...m, failed: false } : m
+        );
+        persist(next);
+        return next;
+      });
+      dispatchRow(row);
+      return true;
+    },
+    [dispatchRow, persist]
+  );
+
+  // Reacciones: se guardan por mensaje, cada una con su lado (mía / de la
+  // pareja), para que los dos vean la misma burbuja.
+  const applyIncomingReaction = useCallback(
+    (targetId, emoji) => {
+      if (!targetId || !emoji) return;
+      setMessages((prev) => {
+        let changed = false;
+        const next = prev.map((m) => {
+          if (m.id !== targetId) return m;
+          const reactions = { ...(m.reactions || {}) };
+          Object.keys(reactions).forEach((k) => {
+            if (k !== emoji && reactions[k] && reactions[k].theirs) {
+              const upd = { ...reactions[k], theirs: false };
+              if (upd.mine) reactions[k] = upd;
+              else delete reactions[k];
+            }
+          });
+          const cur = reactions[emoji] || {};
+          reactions[emoji] = { mine: !!cur.mine, theirs: true };
+          changed = true;
+          return { ...m, reactions };
+        });
+        if (changed) persist(next);
+        return next;
+      });
+    },
+    [persist]
+  );
+
+  const sendReaction = useCallback(
+    (targetId, emoji) => {
+      const target = msgsRef.current.find((m) => m.id === targetId);
+      if (!target || !emoji || !priv || !partnerPub) return false;
+      const frame = buildMsg(
+        `r_${randomId()}`,
+        encodeReaction(targetId, emoji),
+        priv,
+        partnerPub
+      );
+      const ok = frame ? sendFrame(frame) : false;
+      setMessages((prev) => {
+        const next = prev.map((m) => {
+          if (m.id !== targetId) return m;
+          const reactions = { ...(m.reactions || {}) };
+          Object.keys(reactions).forEach((k) => {
+            if (reactions[k] && reactions[k].mine) {
+              const upd = { ...reactions[k], mine: false };
+              if (upd.theirs) reactions[k] = upd;
+              else delete reactions[k];
+            }
+          });
+          const cur = reactions[emoji] || {};
+          reactions[emoji] = { mine: true, theirs: !!cur.theirs };
+          return { ...m, reactions };
+        });
+        persist(next);
+        return next;
+      });
+      return ok;
+    },
+    [priv, partnerPub, sendFrame, persist]
+  );
+
   const flushOutbox = useCallback(() => {
     const rows = msgsRef.current.filter((m) => m.from === "me" && m.pending);
     for (const row of rows) {
-      sendFrameFor(row);
+      dispatchRow(row);
     }
-  }, [sendFrameFor]);
+  }, [dispatchRow]);
   flushRef.current = flushOutbox;
 
+  // `replyTo` (opcional) cita un mensaje anterior: viaja codificado dentro del
+  // propio texto, así los teléfonos con versión antigua lo ven como texto.
   const sendText = useCallback(
-    (text) => {
+    (text, replyTo = null) => {
       const row = {
         id: `m_${randomId()}`,
         from: "me",
         kind: "text",
         text,
+        body: encodeText(text, replyTo),
+        replyTo: replyTo && replyTo.id ? { ...replyTo } : null,
         ts: Date.now(),
         pending: true,
+        sent: false,
+        failed: false,
       };
       appendMessage(row);
-      sendFrameFor(row);
+      dispatchRow(row);
       return row;
     },
-    [appendMessage, sendFrameFor]
+    [appendMessage, dispatchRow]
   );
 
   // Envía un archivo cifrado (foto, audio o vídeo) troceado por el relay.
@@ -502,12 +699,14 @@ export function P2PProvider({ children }) {
         uri: dest,
         ts: Date.now(),
         pending: true,
+        sent: false,
+        failed: false,
       };
       appendMessage(row);
-      await sendFrameFor(row);
+      await dispatchRow(row);
       return row;
     },
-    [appendMessage, sendFrameFor]
+    [appendMessage, dispatchRow]
   );
 
   const sendPhoto = useCallback(
@@ -541,18 +740,26 @@ export function P2PProvider({ children }) {
 
       if (frame.t === "msg") {
         const got = readMsg(frame, priv, partnerPub);
-        sendFrame(buildAck(frame.id));
+        // Sin confirmar mientras el cofre esté cerrado: la pareja verá ⏳ y
+        // reintentará, y así nada se pierde por llegar con la app bloqueada.
+        if (got && vaultIsReady()) sendFrame(buildAck(frame.id));
         if (!got) return;
+        const decoded = decodeChat(got.text);
+        if (decoded.type === "reaction") {
+          applyIncomingReaction(decoded.target, decoded.emoji);
+          return;
+        }
         const added = appendMessage({
           id: got.id,
           from: "them",
           kind: "text",
-          text: got.text,
+          text: decoded.text,
+          replyTo: decoded.replyTo || null,
           ts: got.ts || Date.now(),
           pending: false,
         });
         if (added) {
-          notifyIfBackground(got.text || "💬 Nuevo mensaje");
+          notifyIfBackground(decoded.text || "💬 Nuevo mensaje");
         }
         return;
       }
@@ -585,7 +792,7 @@ export function P2PProvider({ children }) {
           priv,
           partnerPub
         );
-        sendFrame(buildAck(frame.id));
+        if (vaultIsReady()) sendFrame(buildAck(frame.id));
         if (!plain) return;
         const dest = `${FileSystem.documentDirectory}duo_${done.id}.${done.ext}`;
         try {
@@ -623,6 +830,7 @@ export function P2PProvider({ children }) {
       notifyIfBackground,
       sendFrame,
       handleGameFrame,
+      applyIncomingReaction,
     ]
   );
   handleFrameRef.current = handleFrame;
@@ -630,11 +838,7 @@ export function P2PProvider({ children }) {
   // ---------------------------------------------------- borrar contenido ----
   const clearHistory = useCallback(async () => {
     const cid = sessionRef.current?.coupleId;
-    if (cid) {
-      try {
-        await AsyncStorage.removeItem(msgsKey(cid));
-      } catch {}
-    }
+    if (cid) await vaultRemove(msgsKey(cid));
     idsRef.current = new Set();
     setMessages([]);
   }, []);
@@ -725,6 +929,8 @@ export function P2PProvider({ children }) {
         sendAudio,
         sendVideo,
         sendTyping,
+        sendReaction,
+        retryMessage,
         pendingPair,
         acceptPairing,
         rejectPairing,

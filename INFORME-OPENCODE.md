@@ -6,7 +6,7 @@
 > Este archivo está pensado para que un agente de opencode (u otro dev) retome el
 > trabajo sin contexto previo.
 
-Última actualización: 19 de octubre de 2026
+Última actualización: 20 de octubre de 2026
 
 ---
 
@@ -99,32 +99,67 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
       el `latest` de GitHub Releases; `UpdateModal` al abrir la app o volver a
       primer plano, con **cooldown de 6 horas** y sin insistir con una versión ya
       descartada; botón que abre la descarga (`…/releases/latest/download/duo.apk`).
+- [x] **Estados de entrega en el chat** (v0.7.0): ⏳ en cola, ✓ enviado al
+      relay, ✓✓ confirmado por la pareja y ⭕ con **reintento manual**
+      (`retryMessage`); la bandeja reintenta sola cada 12 s. Burbuja con la
+      marca correspondiente (`deliveryState`/`STATE_MARK` en `chatcodec.js`).
+- [x] **Citas y reacciones** (v0.7.0): mantener pulsado un mensaje abre una
+      hoja con **6 reacciones** (😍😘🔥😂🥺❤️) y **«Responder»** (cita con
+      vista previa). Codificación en `chatcodec.js`: el texto normal sale **tal
+      cual** (compatibilidad con versiones antiguas) y las citas/reacciones
+      viajan como JSON con la marca `__duo` v1 dentro del propio texto. Las
+      reacciones se guardan por mensaje con su lado (mía / de la pareja).
+- [x] **Bloqueo de la app** (v0.7.0): **PIN de 4-6 dígitos** (resumen con sal
+      aleatoria, nunca el PIN) y/o **huella** (`expo-local-authentication`,
+      `applock.js`). «Solo PIN» activa el **cifrado de la copia local**
+      (`localvault.js`: clave derivada del PIN con HKDF + AES-GCM); la copia no
+      se toca hasta desbloquear y los **ACK se suprimen** mientras el cofre
+      esté cerrado (la pareja reintenta y no se pierde nada). «PIN + huella» =
+      huella sin cifrado. «¿Olvidaste el PIN?» borra la copia local y permite
+      crear uno nuevo. `LockScreen` (pad numérico) y `PrivacyGate` en `App.js`.
+- [x] **Privacidad configurable** (v0.7.0): **avisos ocultos** (canal
+      `duo-mensajes` de prioridad alta con contenido oculto: «Tienes un mensaje
+      nuevo 🔒»; por defecto activos al crear el bloqueo), **pantalla
+      discreta** (`StealthScreen`: vista falsa de «Notas» al ir a segundo
+      plano), **auto-destrucción** local (Nunca/7/30/90 días, `retention.js`,
+      comprobada cada minuto) y código de verificación con **marca «✓
+      Comprobado»**. Todo en la sección «Privacidad de la app» del Perfil.
 - [x] Persistencia de sesión + historial local cifrado en AsyncStorage (300
       últimos mensajes) + fotos descifradas en almacenamiento local.
-- [x] Notificaciones locales en segundo plano.
+- [x] Notificaciones locales en segundo plano (v0.7.0: también con la app
+      cerrada, mediante `expo-notifications` y canal heads-up `duo-mensajes`).
 - [x] Cifrado E2E: X25519 + HKDF-SHA256 + AES-256-GCM, módulos `@noble/*`.
 - [x] Polyfill `crypto.getRandomValues` con RNG nativo (`expo-crypto`), cargado
       **antes** que cualquier otro módulo (`index.js`).
-- [x] Pruebas: `duo-app/test/duo-test.mjs` → **`npm test`**, **103
+- [x] Pruebas: `duo-app/test/duo-test.mjs` → **`npm test`**, **141
       verificaciones, 0 fallos** (identidad/SAS, encuadre, auth E2E, QR v2,
       temas/sobre del relay, mensajes, fotos, **cifrado del estado del juego**
       —un tercero no lo descifra y el reto no viaja en claro; la pareja recibe el
       juego iniciado—, **respuestas de juego cifradas**, **troceado de audio/vídeo
       `file-*`**, **comparación de versiones**, **contenido ≥ 20 por nivel y por
-      juego** y una sesión completa sobre un "bus" en memoria que imita al
-      broker). Además sigue habiendo una prueba real contra el broker MQTT (fuera
-      de la suite).
-- [x] Bundle de Metro `expo export` verde (`--platform android`; Hermes, 4.18 MB).
+      juego**, **bloqueo y cofre** (sal/resumen del PIN, clave derivada, cofre
+      ilegible con clave equivocada), **chat estructurado** (citas, reacciones,
+      compatibilidad con texto plano), **auto-destrucción** (plazos y filtrado) y
+      una sesión completa sobre un "bus" en memoria que imita al broker). Además
+      sigue habiendo una prueba real contra el broker MQTT (fuera de la suite).
+- [x] Bundle de Metro `expo export` verde (`--platform android`; Hermes, 4.23 MB).
 - [x] APK por GitHub Actions en cada push a `main` que toque `duo-app/**`
       (`npm ci` → `npm test` → `expo prebuild` → `gradlew assembleRelease`).
-- [x] Releases publicados: **v0.1.2** (versión con servidor),
-      **v0.2.0** (primera versión P2P) y **v0.3.0** (conexión por Internet sin
-      servidor propio; app 0.3.0 / versionCode 3). **v0.4.0** (relay MQTT, app
-      0.4.0 / versionCode 4), **v0.5.0** (juegos compartidos + borrado +
-      invitación + nivel Íntimo; app 0.5.0 / versionCode 5) y **v0.6.0**
-      (respuestas en juegos + audio/vídeo/cámara en el chat + contenido ampliado
-      + aviso de actualizaciones; app 0.6.0 / versionCode 6) están **pendientes
-      de compilar y publicar**.
+- [x] Releases publicados: **v0.1.2** (versión con servidor), **v0.2.0**
+      (primera versión P2P), **v0.3.0** (conexión por Internet sin servidor
+      propio; app 0.3.0 / versionCode 3), **v0.4.0** (relay MQTT, app 0.4.0 /
+      versionCode 4), **v0.5.0** (juegos compartidos + borrado + invitación +
+      nivel Íntimo; app 0.5.0 / versionCode 5), **v0.6.0** (respuestas en juegos
+      + audio/vídeo/cámara en el chat + contenido ampliado + aviso de
+      actualizaciones; app 0.6.0 / versionCode 6) y **v0.7.0** (estados ✓/✓✓,
+      citas y reacciones, bloqueo PIN/huella, cifrado local, avisos ocultos,
+      pantalla discreta y auto-destrucción; app 0.7.0 / versionCode 7).
+
+> Nota (20/10/2026): durante la sesión de v0.7.0 la carpeta `DuoProyecto`
+> desapareció del escritorio con los cambios **sin commitear**; se **reclonó
+> el repo desde GitHub** (base `676b9ac`, v0.6.0) y se **reaplicaron todos los
+> cambios** desde el contexto de la sesión, verificados con tests (141/0) y
+> bundle antes de commitear.
 
 ### Pendiente
 
@@ -137,10 +172,17 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
       sincronice en los dos.
 - [ ] Probar en **dos teléfonos** el **borrado de contenido** y el **enlace de
       invitación** (descarga del APK `duo.apk`).
-- [ ] Publicar la **Release v0.5.0** (pendiente de compilar el APK por la CI y
-      subirlo a Releases).
-- [ ] Publicar la **Release v0.6.0** (app 0.6.0 / versionCode 6; pendiente de
-      compilar el APK por la CI y subirlo a Releases).
+- [ ] Probar en **dos teléfonos** el **bloqueo** (PIN/huella, «¿Olvidaste el
+      PIN?»), los **avisos ocultos**, la **pantalla discreta** y la
+      **auto-destrucción** (solo borra lo vencido y no toca la copia de la
+      pareja).
+- [ ] Probar en **dos teléfonos** **citas, reacciones y estados ✓/✓✓/⭕**
+      (incluida compatibilidad: una versión antigua debe ver el JSON como texto
+      normal).
+- [ ] v0.8.0: **llamadas WebRTC** (`react-native-webrtc` ya aprobado) con
+      señalización por el mismo relay MQTT y STUN público.
+- [ ] v0.9.0: **juegos y medios** (galería compartida, cuenta atrás
+      sincronizada, progresión, selección múltiple de fotos, juegos nuevos).
 - [ ] Más juegos/retos; publicar en Play Store.
 
 ---
@@ -152,7 +194,7 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
 | Archivo | Rol |
 | ------- | --- |
 | `duo-app/index.js` | Importa `src/services/polyfills.js` **primero** (RNG para Hermes). |
-| `duo-app/App.js` | Navegación (stack + tabs) con un `navigationRef`: cuando llega un `start` de juego de la pareja (`incomingGame`), **navega solo** a la pantalla correspondiente (`GAME_ROUTES`), de modo que el juego aparece en los dos teléfonos. |
+| `duo-app/App.js` | Navegación (stack + tabs) con un `navigationRef`: cuando llega un `start` de juego de la pareja (`incomingGame`), **navega solo** a la pantalla correspondiente (`GAME_ROUTES`), de modo que el juego aparece en los dos teléfonos. **v0.7.0**: `PrivacyGate` envuelve todo — pide PIN/huella al abrir (`LockScreen`) y monta `StealthScreen` (falsa «Notas») al ir a segundo plano si está activo. |
 | `duo-app/src/config.js` | Datos **públicos**: `REPO_URL`, `RELEASES_URL`, `APP_DOWNLOAD_URL` (= `…/releases/latest/download/duo.apk`) e `INVITE_MESSAGE` (texto para invitar a la pareja). |
 | `duo-app/src/data/pool-*.js` | Contenido de los juegos: `pool-retos.js`, `pool-truths.js`, `pool-dares.js`, `pool-dados.js` y `pool-preguntas.js`, cada uno con **22 opciones únicas por nivel × 5 niveles = 110 ítems** (los tests exigen ≥ 20 por nivel y por juego). `mock.js` los reexporta. |
 | `duo-app/src/services/cryptocore.js` | Núcleo criptográfico **puro** (sin React Native): claves, cifrado, `deriveCoupleId`, código SAS, emoji por clave, secreto del QR. Testeable en Node. |
@@ -163,13 +205,19 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
 | `duo-app/src/services/crypto.js` | Wrapper de almacenamiento: guarda/carga el par de claves en AsyncStorage y re-exporta `cryptocore`. |
 | `duo-app/src/services/version.js` | Lee la versión instalada (`app.json`) y compara versiones (semver). |
 | `duo-app/src/services/updatecheck.js` | Comprueba el `latest` de GitHub Releases contra la versión instalada y propone el aviso `UpdateModal` (cooldown 6 h, sin insistir con una versión ya descartada; botón que abre la descarga). |
-| `duo-app/src/context/P2PContext.js` | Capa React: historial local (`duo.msgs.<coupleId>`), bandeja de salida, envío/recepción de **archivos** (fotos, audio y vídeo por `file-meta`/`file-chunk`, ensamblados con `PhotoAssembler`), acks/dedup, typing, notificaciones en 2.º plano, API de pareo, **estado del juego compartido** (`gameSession`, `startGame`, `setGameLevel`, `drawGame`, **`sendGameReply`** (hilo `GameThread`), `endGame`, `incomingGame`, `clearIncomingGame`; baliza cada 6 s **que incluye el hilo de respuestas**) y **borrado** (`clearHistory`, `deleteStoredPhotos`, `wipeAllContent`). Reintento periódico cada 12 s (`flushOutbox` en `flushRef`). |
+| `duo-app/src/services/chatcodec.js` | **Puro** (v0.7.0): citas y reacciones (`encodeText`/`encodeReaction`/`decodeChat`, marca `__duo` v1, inversión de perspectiva del citado) + estados de entrega (`deliveryState`/`STATE_MARK`: ⏳/⭕/✓/✓✓). |
+| `duo-app/src/services/retention.js` | **Puro** (v0.7.0): auto-destrucción local — `TTL_OPTIONS` (Nunca/7/30/90), `parseTtlDays`, `isExpired`, `filterExpired`. |
+| `duo-app/src/services/applock.js` | (v0.7.0) Bloqueo: `loadLockState`, `setupPin` (resumen con sal), `unlockWithPin`/`unlockWithBio`, huella (`setBioEnabled`/`enableBioOnly`), avisos ocultos, pantalla discreta, `onLockStateChange`. Con cifrado activo entrega la clave al cofre al desbloquear. |
+| `duo-app/src/services/localvault.js` | (v0.7.0) Cofre de la copia local: `vaultGet`/`vaultSet`/`vaultRemove` cifrados con AES-GCM cuando hay clave; espera con `vaultReady()` y no escribe en claro si el modo aún no se conoce; `vaultIsReady()` para el gate de ACKs; `onVaultChange` para reescribir al cambiar de modo. |
+| `duo-app/src/context/P2PContext.js` | Capa React: historial local (`duo.msgs.<coupleId>`), bandeja de salida, envío/recepción de **archivos** (fotos, audio y vídeo por `file-meta`/`file-chunk`, ensamblados con `PhotoAssembler`), acks/dedup, typing, notificaciones en 2.º plano, API de pareo, **estado del juego compartido** (`gameSession`, `startGame`, `setGameLevel`, `drawGame`, **`sendGameReply`** (hilo `GameThread`), `endGame`, `incomingGame`, `clearIncomingGame`; baliza cada 6 s **que incluye el hilo de respuestas**) y **borrado** (`clearHistory`, `deleteStoredPhotos`, `wipeAllContent`). Reintento periódico cada 12 s (`flushOutbox` en `flushRef`). **v0.7.0**: historial por el **cofre** (`vaultGet`/`vaultSet`), **estados ✓/✓✓/⭕** (`markSent`/`markFailed`/`retryMessage`), **`sendReaction`** y citas (`sendText(text, replyTo)` con `decodeChat` al recibir), **ACK suprimido con el cofre cerrado**, avisos ocultos y **limpieza por retención** cada minuto. |
 | `duo-app/src/context/E2EContext.js` | Expone las claves del dispositivo; `peerPub` = `session.partnerPub`. |
 | `duo-app/src/screens/OnboardingScreen.js` | Un solo flujo de vínculo: `welcome` (crear / escanear / pegar + **«📲 Enviar el enlace de descarga a mi pareja»**), `create` (QR de 240 px + «📤 Compartir el código» vía `Share`), `paste`, `scan` y `joining` (spinner + SAS). |
-| `duo-app/src/screens/ChatScreen.js` | Chat sobre `useP2P()` (sin api/socket). Texto, fotos (galería o cámara), notas de voz y vídeos cortos; fotos con `expo-image-manipulator` (1280 px, JPEG 0.7) antes de cifrar. Audio/vídeo van por `file-meta`/`file-chunk` y se reproducen en burbujas (audio play/pausa, vídeo con visor a pantalla completa). El botón del candado explica el cifrado. |
+| `duo-app/src/screens/ChatScreen.js` | Chat sobre `useP2P()` (sin api/socket). Texto, fotos (galería o cámara), notas de voz y vídeos cortos; fotos con `expo-image-manipulator` (1280 px, JPEG 0.7) antes de cifrar. Audio/vídeo van por `file-meta`/`file-chunk` y se reproducen en burbujas (audio play/pausa, vídeo con visor a pantalla completa). El botón del candado explica el cifrado. **v0.7.0**: marcas ⏳/⭕/✓/✓✓ (con reintento manual), **hoja de reacciones y responder** al mantener pulsado, barra de cita y vista previa del citado. |
 | `duo-app/src/components/ChallengeDeck.js` | Base común de los juegos con botones: lee/escribe el **estado compartido** (nivel y reto) en vez de sortear localmente; botón «Terminar juego». |
-| `duo-app/src/screens/ProfileScreen.js` | Perfil con **datos reales** (nº de mensajes/fotos), invitación + enlace de descarga y **borrado** (historial, fotos, todo) + desvincular, todo con confirmación. |
-| `duo-app/test/duo-test.mjs` | Pruebas (**103 verificaciones, 0 fallos**): copia `cryptocore.js`/`protocol.js`/`relayproto.js` a temporales `.mjs` y los importa en Node; incluye cifrado del estado del juego, respuestas de juego cifradas, troceado de audio/vídeo (`file-*`), comparación de versiones, contenido ≥ 20 por nivel y por juego, y una sesión completa sobre un "bus" en memoria que imita al broker. |
+| `duo-app/src/components/LockScreen.js` | (v0.7.0) Pad numérico PIN (4-6 dígitos): `mode="unlock"` (con huella si no hay PIN; «¿Olvidaste el PIN?» borra la copia local) y `mode="create"` (introduce + confirma) para el Perfil. |
+| `duo-app/src/components/StealthScreen.js` | (v0.7.0) Vista falsa de «Notas» que tapa la app al ir a segundo plano (pantalla discreta). |
+| `duo-app/src/screens/ProfileScreen.js` | Perfil con **datos reales** (nº de mensajes/fotos), invitación + enlace de descarga y **borrado** (historial, fotos, todo) + desvincular, todo con confirmación. **v0.7.0**: sección «Privacidad de la app» (PIN/huella/avisos ocultos/pantalla discreta/auto-destrucción), modal de creación de PIN (`LockScreen mode="create"`) y código de verificación con «✓ Comprobado». |
+| `duo-app/test/duo-test.mjs` | Pruebas (**141 verificaciones, 0 fallos**): copia `cryptocore.js`/`protocol.js`/`relayproto.js`/`version.js`/`chatcodec.js`/`retention.js` a temporales `.mjs` y los importa en Node; incluye cifrado del estado del juego, respuestas de juego cifradas, troceado de audio/vídeo (`file-*`), comparación de versiones, contenido ≥ 20 por nivel y por juego, **bloqueo/cofre, chat estructurado y auto-destrucción**, y una sesión completa sobre un "bus" en memoria que imita al broker. |
 
 ### Flujo de vínculo (QR / código)
 
@@ -273,7 +321,7 @@ Payload:         { k: "start"|"level"|"draw"|"reply"|"sync"|"end", gameId, level
 ```bash
 cd duo-app
 npm install
-npm test              # 103 verificaciones (protocolo + relay + cifrado E2E + juego + archivos + versiones)
+npm test              # 141 verificaciones (protocolo + relay + cifrado E2E + juego + archivos + versiones + bloqueo + chat estructurado + auto-destrucción)
 npx expo start
 ```
 
@@ -383,7 +431,7 @@ npx eas build -p android --profile preview
 
 ```bash
 cd C:\Users\whustaf\Desktop\DuoProyecto\duo-app
-npm test                          # protocolo + relay (103 ok)
+npm test                          # protocolo + relay (141 ok)
 npx expo export --platform android --output-dir dist   # bundle Metro
 ```
 
@@ -409,15 +457,23 @@ node -e "const b=require('@babel/core'),fs=require('fs'),p=require('path');const
     pantalla, baliza 6 s y «Terminar juego»), **borrado de contenido** local
     (historial/fotos/todo) con confirmación, **enlace de invitación con descarga
     estable (`duo.apk`)**, **5 niveles** (incluido **Íntimo +18**) y tests a **64
-    verificaciones** (app `0.5.0`, versionCode `5`). **Pendiente de compilar y
-    publicar.**
+    verificaciones** (app `0.5.0`, versionCode `5`). **Publicada.**
   - `v0.6.0` — **respuestas dentro de los juegos** (hilo `GameThread` cifrado y
     sincronizado en los dos teléfonos), **audio, vídeo y cámara en el chat**
     (notas de voz, fotos con la cámara y vídeos cortos, todo E2E por
     `file-meta`/`file-chunk`), **contenido de juegos ampliado** (5 pools con 110
     ítems por juego: 22 por nivel × 5 niveles), **aviso de actualizaciones
     in-app** (cooldown 6 h) y tests a **103 verificaciones, 0 fallos** (bundle
-    Hermes Android 4.18 MB; app `0.6.0`, versionCode `6`). **Pendiente de
-    compilar y publicar.**
+    Hermes Android 4.18 MB; app `0.6.0`, versionCode `6`). **Publicada.**
+  - `v0.7.0` — **impacto inmediato + privacidad**: **estados de entrega**
+    (⏳/✓/✓✓/⭕ con reintento manual), **citas y reacciones** (JSON `__duo` v1,
+    compatible con versiones antiguas), **bloqueo con PIN/huella** (PIN con sal,
+    huella solo sin cifrado, «¿Olvidaste el PIN?»), **cifrado de la copia
+    local** (clave derivada del PIN; ACK suprimido con el cofre cerrado),
+    **avisos ocultos**, **pantalla discreta** (falsa «Notas»),
+    **auto-destrucción** (Nunca/7/30/90 días) y «✓ Comprobado» en el código
+    SAS; permisos `USE_BIOMETRIC`/`POST_NOTIFICATIONS`, deps `expo-notifications`
+    + `expo-local-authentication` y tests a **141 verificaciones, 0 fallos**
+    (bundle Hermes Android 4.23 MB; app `0.7.0`, versionCode `7`).
 - Tras cambiar dependencias: commit + push y la CI (Actions → Build APK)
   compila y sube el artefacto; descargarlo y publicarlo en el Release.

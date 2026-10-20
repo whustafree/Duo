@@ -4,15 +4,17 @@ Documento de contexto para agentes/desarrolladores. Versión **relay por broker
 MQTT público (sin servidor propio)**. El informe completo del proyecto está en
 `../INFORME-OPENCODE.md` y el resumen en `../MANIFIESTO.md`.
 
-Última actualización: 19 de octubre de 2026
+Última actualización: 20 de octubre de 2026
 
 ---
 
 ## Qué es
 
 **Duo** es una app Expo (SDK 52) para parejas: chat de texto, fotos, audio y
-vídeo, **juegos compartidos entre los dos** (con respuestas dentro del juego) y
-retos. **No hay backend ni servidor propio**: los
+vídeo con **estados de entrega**, **citas y reacciones**, **juegos compartidos
+entre los dos** (con respuestas dentro del juego), retos y **bloqueo de la app
+con PIN/huella** (con cifrado opcional de la copia local). **No hay backend ni
+servidor propio**: los
 dos teléfonos se comunican a través de un **broker MQTT público y gratuito**
 (p. ej. `wss://broker.emqx.io:8084/mqtt`) que actúa **solo como cartero**. Todo
 va cifrado E2E (X25519 + HKDF-SHA256 + AES-256-GCM, libs `@noble/*`), incluidos
@@ -22,13 +24,14 @@ Funciona **desde cualquier red** (misma WiFi o datos móviles, NAT estricto
 incluido).
 
 - Repo: https://github.com/whustafree/Duo (APKs en Releases; CI en Actions).
-- Estado: `npm test` 103/103, `npx expo export` verde (bundle Metro Android, Hermes 4.18 MB).
+- Estado: `npm test` 141/141, `npx expo export` verde (bundle Metro Android, Hermes 4.23 MB).
+  Última release publicada: **v0.7.0** (20/10/2026).
 
 ## Comandos
 
 ```bash
 npm install
-npm test              # duo-app/test/duo-test.mjs (Node puro, sin device; 103 verificaciones)
+npm test              # duo-app/test/duo-test.mjs (Node puro, sin device; 141 verificaciones)
 npx expo start        # desarrollo JS
 npx expo export --platform android --output-dir dist   # prueba de bundle
 ```
@@ -50,30 +53,43 @@ src/data/
 src/services/
   polyfills.js            # instala globalThis.crypto.getRandomValues (expo-crypto)
   cryptocore.js           # NÚCLEO PURO: claves, AES-GCM, coupleId, SAS, emoji
+                          #   + PIN (newPinSalt/pinHash/deriveLocalKey para el cofre)
   crypto.js               # wrapper AsyncStorage del par de claves + re-export
   protocol.js             # PURO: tramas, auth/pair/msg/archivos(file-*)/game + buildGame/readGame
   mqttws.js               # cliente MQTT 3.1.1 sobre WebSocket, SIN dependencias
                           #   + MQTT_BROKERS
   relayproto.js           # PURO: temas, QR v2 y sobre {s,f} del relay
   relay.js                # transporte Relay (broker público), API tipo P2P
-  notifications.js        # notificaciones locales
+  notifications.js        # notificaciones locales (canal duo-mensajes heads-up + ocultas)
   version.js              # versión instalada (app.json) + comparación semver
   updatecheck.js          # compara con el latest de GitHub Releases (aviso in-app)
+  chatcodec.js            # PURO: citas/reacciones (JSON marca __duo) + estados ⏳/⭕/✓/✓✓
+  retention.js            # PURO: auto-destrucción local (Nunca/7/30/90 días)
+  applock.js              # bloqueo: PIN (resumen con sal), huella, avisos ocultos,
+                          #   pantalla discreta, onLockStateChange
+  localvault.js           # cofre: copia local cifrada (AES-GCM) + vaultReady/vaultIsReady
 src/context/
   SessionContext.js       # sesión de la pareja (duo.session) / clear()
   E2EContext.js           # claves del dispositivo; peerPub = session.partnerPub
-  P2PContext.js           # historial, bandeja (reintento 12s), archivos (fotos/audio/vídeo),
+  P2PContext.js           # historial (por el cofre), bandeja (reintento 12s), archivos (fotos/audio/vídeo),
                           #   typing, pareo (Relay), juegos compartidos (gameSession +
                           #   sendGameReply/hilo GameThread + baliza 6s con el hilo),
+                          #   estados markSent/markFailed/retryMessage, sendReaction,
                           #   borrado (clearHistory/deleteStoredPhotos/wipeAllContent),
-                          #   notificaciones en 2.º plano
+                          #   notificaciones en 2.º plano + retención cada minuto
 src/screens/
   OnboardingScreen.js     # vínculo + invitación (envía enlace de descarga)
-  ChatScreen.js           # chat sobre useP2P(): texto, fotos, audio y vídeo
+  ChatScreen.js           # chat sobre useP2P(): texto, fotos, audio y vídeo,
+                          #   estados ✓/✓✓/⭕, hoja de reacciones y citar (long-press)
   ProfileScreen.js        # datos reales + invitación + borrado + desvincular
+                          #   + sección «Privacidad de la app» (PIN/huella/ocultos/
+                          #   pantalla discreta/auto-destrucción)
   Games/TruthDare/Challenge/Dice/QuestionsScreen  # juegos (estado compartido)
 src/components/ChallengeDeck.js  # base de juegos con estado compartido + «Terminar juego»
-test/duo-test.mjs         # 103 verificaciones (incluye juego, archivos y versiones)
+src/components/LockScreen.js     # pad numérico PIN (crear/desbloquear) + huella
+src/components/StealthScreen.js  # pantalla discreta: falsa «Notas»
+test/duo-test.mjs         # 141 verificaciones (incluye bloqueo/cofre, chat
+                          #   estructurado, auto-destrucción, juego y versiones)
 ```
 
 ### Reglas del protocolo (no romper)
@@ -96,20 +112,30 @@ test/duo-test.mjs         # 103 verificaciones (incluye juego, archivos y versio
    pubB` ordenadas)). Nunca viaja por la red.
 5. **Emoji por clave**: `emojiForPub(pub)` es la única fuente de emojis en
    sesiones/pareo (consistente entre los dos teléfonos).
-6. **Bandeja**: todo mensaje/foto se persiste `pending` y se **reintenta cada
-   12 s** mientras estás en línea, hasta recibir el ACK (`ack`).
-7. **Archivos (foto/audio/vídeo)**: cifrar SIEMPRE en origen; trocear en chunks
+6. **Bandeja y estados**: todo mensaje/foto se persiste `pending` y se
+   **reintenta cada 12 s** mientras estás en línea, hasta recibir el ACK
+   (`ack`). En la burbuja se marca ⏳ (en cola), ✓ (enviado al relay), ✓✓ (ACK
+   de la pareja) o ⭕ (fallo con reintento manual). **Con el cofre cerrado no
+   se envía ACK** (v0.7.0): así la pareja reintenta y nada se pierde por llegar
+   con la app bloqueada.
+7. **Citas y reacciones (`chatcodec.js`)**: el texto normal se envía **tal
+   cual** (compatibilidad); las citas y reacciones viajan como JSON con la
+   marca `__duo` v1 dentro del propio texto y `decodeChat` las interpreta
+   (invirtiendo la perspectiva del citado). Un JSON sin marca o con versión
+   desconocida se muestra como texto normal. Las reacciones se guardan por
+   mensaje con su lado (mía / de la pareja).
+8. **Archivos (foto/audio/vídeo)**: cifrar SIEMPRE en origen; trocear en chunks
    de 48000 chars de base64; tramas `file-meta`/`file-chunk` con `kind`
    (photo/audio/video) y `ext`; el ensamblador (`PhotoAssembler`) deduplica por
    `id`.
-8. **QR de vínculo v2** (5 campos, corto y sin direcciones):
+9. **QR de vínculo v2** (5 campos, corto y sin direcciones):
    `duo:pair:v2:<pub_b64url>:<ps_b64url>`. `parsePairQr()` (en `relayproto.js`,
    puro) devuelve `null` con cualquier otra cosa, incluido el QR antiguo de 7
    campos.
-9. **Broker**: se prueban los 3 de `MQTT_BROKERS` en orden hasta que uno
-   responda; el cliente MQTT es QoS 0 (sin persistencia: la fiabilidad la da la
-   bandeja + ACK) y se reconecta con backoff.
-10. **Juegos compartidos**: se sincronizan por las tramas `game` (payload con
+10. **Broker**: se prueban los 3 de `MQTT_BROKERS` en orden hasta que uno
+    responda; el cliente MQTT es QoS 0 (sin persistencia: la fiabilidad la da la
+    bandeja + ACK) y se reconecta con backoff.
+11. **Juegos compartidos**: se sincronizan por las tramas `game` (payload con
     `k: start|level|draw|reply|sync|end`, cifrado E2E). `App.js` usa un
     `navigationRef` para **abrir solo** la pantalla del juego cuando llega un
     `start`; el host reenvía `sync` cada 6 s (baliza, **con el hilo de
@@ -138,8 +164,9 @@ la misma red:
 
 - Instalar paquetes Expo con `npx expo install` (respeta SDK 52). Actuales:
   `expo-camera@~16.0.18`, `expo-crypto@~14.0.2`, `expo-image-manipulator@~13.0.6`,
-  `react-native-svg@15.8.0`, `react-native-qrcode-svg` y `expo-av` (notas de
-  voz y vídeo del chat).
+  `react-native-svg@15.8.0`, `react-native-qrcode-svg`, `expo-av` (notas de
+  voz y vídeo del chat), `expo-notifications@~0.29.14` (avisos con la app
+  cerrada, v0.7.0) y `expo-local-authentication@~15.0.2` (huella, v0.7.0).
 - **Ya no hay módulos nativos de red**: el transporte usa el **WebSocket global**
   y `mqttws.js` implementa MQTT a mano sin dependencias. Se retiraron las
   dependencias nativas de red anteriores.
@@ -148,7 +175,8 @@ la misma red:
 - `newArchEnabled: false` en `app.json` (configuración actual; ya no responde a
   módulos nativos).
 - Permisos en `app.json`: `RECORD_AUDIO` y `READ_MEDIA_VIDEO` (notas de voz y
-  vídeos del chat).
+  vídeos del chat) y `USE_BIOMETRIC` + `POST_NOTIFICATIONS` (huella y avisos,
+  v0.7.0).
 - `@babel/register` debe ser **7.x** (devDependency, para `npm test`).
 - socket.io-client, api.js, socket.js, `duo-server/` y el `config.js` viejo de la
   API fueron eliminados: **no reintroducir servidor propio ni `fetch` a una API**.
@@ -193,7 +221,7 @@ inmediato al volver la app a primer plano.
 ## Verificación antes de dar por bueno un cambio
 
 ```bash
-npm test                          # 103 ok
+npm test                          # 141 ok
 npx expo export --platform android --output-dir dist   # bundle ok
 ```
 

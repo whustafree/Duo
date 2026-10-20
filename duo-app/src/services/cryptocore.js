@@ -243,6 +243,28 @@ export function verificationCode(pubA, pubB) {
   return String(n).padStart(6, "0");
 }
 
+// ---- bloqueo local ---------------------------------------------------------
+// El PIN nunca se guarda: solo su resumen con sal aleatoria. La misma sal y el
+// PIN derivan la clave que cifra la copia de mensajes de este teléfono.
+
+export function newPinSalt() {
+  return randomId();
+}
+
+export function pinHash(pin, salt) {
+  return bytesToB64(sha256(utf8ToBytes(`duo-pin-v1|${salt}|${pin}`)));
+}
+
+export function deriveLocalKey(secret, salt) {
+  return hkdf(
+    sha256,
+    utf8ToBytes(`duo-local-v1|${salt}|${secret}`),
+    utf8ToBytes("duo-salt-v1"),
+    utf8ToBytes("duo-local-store-v1"),
+    32
+  );
+}
+
 // Nombre corto y seguro para anunciar el dispositivo por mDNS (solo letras y
 // números, derivado de la clave pública).
 export function pubInstance(pubB64) {

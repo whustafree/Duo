@@ -1,6 +1,12 @@
 import "react-native-gesture-handler";
-import { useEffect } from "react";
-import { View, Text, StyleSheet, ActivityIndicator } from "react-native";
+import { useEffect, useState } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  ActivityIndicator,
+  AppState,
+} from "react-native";
 import {
   NavigationContainer,
   DefaultTheme,
@@ -16,6 +22,13 @@ import { SessionProvider, useSession } from "./src/context/SessionContext";
 import { E2EProvider } from "./src/context/E2EContext";
 import { P2PProvider, useP2P } from "./src/context/P2PContext";
 import UpdateModal from "./src/components/UpdateModal";
+import LockScreen from "./src/components/LockScreen";
+import StealthScreen from "./src/components/StealthScreen";
+import {
+  loadLockState,
+  lockState as readLockState,
+  onLockStateChange,
+} from "./src/services/applock";
 import OnboardingScreen from "./src/screens/OnboardingScreen";
 import ChatScreen from "./src/screens/ChatScreen";
 import GamesScreen from "./src/screens/GamesScreen";
@@ -161,13 +174,86 @@ function Root() {
   );
 }
 
+// Puerta de bloqueo: si la pareja activó PIN/huella en "Nosotros › Privacidad",
+// la app se abre pidiéndolo. Con "pantalla discreta" activada, al ir a segundo
+// plano todo se tapa con una vista falsa de notas (se ve en el selector de
+// apps y en capturas del sistema).
+function PrivacyGate({ children }) {
+  const [lockLoaded, setLockLoaded] = useState(false);
+  const [gate, setGate] = useState(null); // estado del bloqueo (para LockScreen)
+  const [locked, setLocked] = useState(false);
+  const [stealth, setStealth] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const st = await loadLockState();
+      if (!alive) return;
+      setGate(st);
+      setLocked(!!(st.pin || st.bio));
+      setLockLoaded(true);
+    })();
+    // Los ajustes se pueden cambiar desde Perfil estando dentro: se reflejan
+    // al momento (deshabilitar el bloqueo desbloquea; habilitarlo se pide al
+    // volver desde segundo plano, no en la cara).
+    const off = onLockStateChange(() => {
+      const st = readLockState();
+      setGate(st);
+      if (!(st.pin || st.bio)) {
+        setLocked(false);
+      } else if (AppState.currentState !== "active") {
+        setLocked(true);
+      }
+    });
+    return () => {
+      alive = false;
+      off();
+    };
+  }, []);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (s) => {
+      const st = readLockState();
+      setStealth(!!st.stealth && s !== "active");
+      if (s !== "active" && (st.pin || st.bio)) setLocked(true);
+    });
+    return () => sub.remove();
+  }, []);
+
+  if (!lockLoaded) {
+    return (
+      <View style={styles.boot}>
+        <Text style={styles.bootEmoji}>💞</Text>
+        <ActivityIndicator color={colors.primary} style={{ marginTop: 16 }} />
+      </View>
+    );
+  }
+
+  return (
+    <>
+      {locked ? (
+        <LockScreen
+          mode="unlock"
+          lockState={gate}
+          onUnlock={() => setLocked(false)}
+        />
+      ) : (
+        children
+      )}
+      {stealth ? <StealthScreen /> : null}
+    </>
+  );
+}
+
 export default function App() {
   return (
     <SafeAreaProvider>
       <SessionProvider>
         <E2EProvider>
           <P2PProvider>
-            <Root />
+            <PrivacyGate>
+              <Root />
+            </PrivacyGate>
           </P2PProvider>
         </E2EProvider>
       </SessionProvider>

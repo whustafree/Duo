@@ -24,11 +24,15 @@ const CORE = "cryptocore";
 const PROTO = "protocol";
 const RELAY = "relayproto";
 const VERSION = "version";
+const CHATCODEC = "chatcodec";
+const RETENTION = "retention";
 const TMP = {
   [CORE]: join(SVC, `.tmp-test-${CORE}.mjs`),
   [PROTO]: join(SVC, `.tmp-test-${PROTO}.mjs`),
   [RELAY]: join(SVC, `.tmp-test-${RELAY}.mjs`),
   [VERSION]: join(SVC, `.tmp-test-${VERSION}.mjs`),
+  [CHATCODEC]: join(SVC, `.tmp-test-${CHATCODEC}.mjs`),
+  [RETENTION]: join(SVC, `.tmp-test-${RETENTION}.mjs`),
 };
 
 let passed = 0;
@@ -53,6 +57,8 @@ function loadPureModules() {
   writeFileSync(TMP[PROTO], rewrite(readFileSync(join(SVC, `${PROTO}.js`), "utf8")));
   writeFileSync(TMP[RELAY], rewrite(readFileSync(join(SVC, `${RELAY}.js`), "utf8")));
   writeFileSync(TMP[VERSION], readFileSync(join(SVC, `${VERSION}.js`), "utf8"));
+  writeFileSync(TMP[CHATCODEC], readFileSync(join(SVC, `${CHATCODEC}.js`), "utf8"));
+  writeFileSync(TMP[RETENTION], readFileSync(join(SVC, `${RETENTION}.js`), "utf8"));
 }
 
 function cleanup() {
@@ -125,6 +131,8 @@ async function main() {
     const P = await import(pathToFileURL(TMP[PROTO]).href);
     const R = await import(pathToFileURL(TMP[RELAY]).href);
     const V = await import(pathToFileURL(TMP[VERSION]).href);
+    const CC = await import(pathToFileURL(TMP[CHATCODEC]).href);
+    const RT = await import(pathToFileURL(TMP[RETENTION]).href);
 
     console.log("\n1) Identidad y claves");
     const A = C.generateKeyPair();
@@ -598,6 +606,188 @@ async function main() {
         mockSrc.includes(`"./${file.replace(/\.js$/, "")}"`)
       ),
       "mock.js reexporta los 5 pools"
+    );
+
+    console.log("\n10) Bloqueo local: PIN y cofre cifrado");
+    const saltA = C.newPinSalt();
+    const saltB = C.newPinSalt();
+    ok(
+      typeof saltA === "string" && saltA.length > 8,
+      "la sal del PIN no está vacía"
+    );
+    ok(saltA !== saltB, "cada sal es distinta (aleatoria)");
+    const pin = "1234";
+    const h1 = C.pinHash(pin, saltA);
+    ok(h1 === C.pinHash(pin, saltA), "el resumen del PIN es determinista");
+    ok(C.pinHash("9999", saltA) !== h1, "otro PIN → otro resumen");
+    ok(C.pinHash(pin, saltB) !== h1, "otra sal → otro resumen");
+    ok(!h1.includes(pin), "el resumen NUNCA contiene el PIN");
+    const key1 = C.deriveLocalKey(pin, saltA);
+    const key2 = C.deriveLocalKey(pin, saltA);
+    ok(
+      key1 instanceof Uint8Array && key1.length === 32,
+      "la clave local del cofre son 32 bytes"
+    );
+    ok(
+      key1.every((b, i) => b === key2[i]),
+      "misma clave al repetir PIN y sal"
+    );
+    ok(
+      !C.deriveLocalKey(pin, saltB).every((b, i) => b === key1[i]),
+      "otra sal deriva otra clave"
+    );
+    const vaultPlain = JSON.stringify([{ id: "m_1", text: "te quiero 💞" }]);
+    const vaultEnv = C.encryptWithKey(key1, vaultPlain);
+    const opened = C.decryptWithKey(
+      key1,
+      vaultEnv.ciphertextB64,
+      vaultEnv.nonceB64
+    );
+    ok(
+      opened === vaultPlain,
+      "el cofre descifra la copia local con la clave derivada del PIN"
+    );
+    ok(
+      C.decryptWithKey(
+        C.deriveLocalKey("0000", saltA),
+        vaultEnv.ciphertextB64,
+        vaultEnv.nonceB64
+      ) === null,
+      "con otro PIN no se descifra nada"
+    );
+    const badNonce = vaultEnv.nonceB64.slice(0, -4) + "AAAA";
+    ok(
+      C.decryptWithKey(key1, vaultEnv.ciphertextB64, badNonce) === null,
+      "un nonce alterado rompe el descifrado (GCM)"
+    );
+
+    console.log("\n11) Chat estructurado: citas y reacciones");
+    ok(
+      CC.encodeText("hola 💞", null) === "hola 💞",
+      "el texto normal sale TAL CUAL (compatibilidad)"
+    );
+    const replyEnc = CC.encodeText("yo igual 🥰", {
+      id: "m_1",
+      from: "me",
+      kind: "text",
+      preview: "te quiero",
+    });
+    let replyObj = null;
+    try {
+      replyObj = JSON.parse(replyEnc);
+    } catch {}
+    ok(
+      replyObj && replyObj.__duo === 1 && replyObj.type === "text",
+      "la cita viaja como JSON con la marca __duo v1"
+    );
+    const plainDec = CC.decodeChat("buenas noches 🌙");
+    ok(
+      plainDec.type === "text" &&
+        plainDec.text === "buenas noches 🌙" &&
+        !plainDec.replyTo,
+      "un texto normal se descodifica tal cual, sin cita"
+    );
+    const replyDec = CC.decodeChat(replyEnc);
+    ok(
+      replyDec.type === "text" && replyDec.text === "yo igual 🥰",
+      "el texto de la cita llega completo"
+    );
+    ok(
+      replyDec.replyTo &&
+        replyDec.replyTo.id === "m_1" &&
+        replyDec.replyTo.preview === "te quiero",
+      "la cita conserva id y vista previa"
+    );
+    ok(
+      replyDec.replyTo.from === "them",
+      "la perspectiva del citado se invierte al recibir (me → them)"
+    );
+    ok(
+      CC.decodeChat('{"otra":"cosa"}').text === '{"otra":"cosa"}',
+      "un JSON viejo sin la marca se ve como texto normal"
+    );
+    ok(
+      CC.decodeChat('{"__duo":99,"type":"text","text":"futuro"}').text ===
+        '{"__duo":99,"type":"text","text":"futuro"}',
+      "un formato más nuevo se muestra como texto (compat. hacia delante)"
+    );
+    let junk = null;
+    try {
+      junk = CC.decodeChat('{"roto');
+    } catch {
+      junk = { type: "lanzó" };
+    }
+    ok(
+      junk && junk.type === "text" && junk.text === '{"roto',
+      "un JSON cortado no lanza y se muestra como texto"
+    );
+    const reEnc = CC.encodeReaction("m_9", "🔥");
+    const reDec = CC.decodeChat(reEnc);
+    ok(
+      reDec.type === "reaction" && reDec.target === "m_9" && reDec.emoji === "🔥",
+      "la reacción llega con mensaje y emoji"
+    );
+    ok(
+      CC.decodeChat(CC.encodeReaction("m_9", "")).emoji === "",
+      "una reacción sin emoji no rompe nada"
+    );
+    ok(CC.REACTIONS.length === 6, "hay 6 reacciones para elegir");
+    ok(
+      CC.deliveryState({ from: "me", pending: true }) === "queued",
+      "estado: en cola (reloj ⏳)"
+    );
+    ok(
+      CC.deliveryState({ from: "me", pending: true, failed: true }) === "failed",
+      "estado: falló (⭕ con reintento)"
+    );
+    ok(
+      CC.deliveryState({ from: "me", pending: true, sent: true }) === "sent",
+      "estado: enviado al relay (✓)"
+    );
+    ok(
+      CC.deliveryState({ from: "me", pending: false }) === "delivered",
+      "estado: la pareja confirmó (✓✓)"
+    );
+    ok(
+      CC.deliveryState({ from: "them", pending: false }) === "received",
+      "estado: recibido (de la pareja)"
+    );
+    ok(
+      CC.STATE_MARK.sent.includes("✓") && CC.STATE_MARK.delivered.includes("✓✓"),
+      "las marcas en la burbuja son ✓ y ✓✓"
+    );
+
+    console.log("\n12) Auto-destrucción (retención local)");
+    ok(RT.parseTtlDays("7") === 7, "lee el plazo guardado");
+    ok(
+      RT.parseTtlDays("nada") === 0 &&
+        RT.parseTtlDays("-5") === 0 &&
+        RT.parseTtlDays(null) === 0,
+      "plazos inválidos significan Nunca"
+    );
+    ok(
+      RT.TTL_OPTIONS.map((o) => o.days).join(",") === "0,7,30,90",
+      "las opciones son Nunca, 7, 30 y 90 días"
+    );
+    ok(!RT.isExpired({ ts: Date.now() }, 0), "con Nunca nada vence");
+    ok(
+      !RT.isExpired({ ts: Date.now() - 2 * 86400000 }, 7),
+      "dentro del plazo se conserva"
+    );
+    ok(
+      RT.isExpired({ ts: Date.now() - 8 * 86400000 }, 7),
+      "pasado el plazo vence"
+    );
+    ok(!RT.isExpired({ id: "m_1" }, 7), "un mensaje sin marca de tiempo no vence");
+    const sample = [
+      { id: "a", ts: Date.now() },
+      { id: "b", ts: Date.now() - 40 * 86400000 },
+      { id: "c", ts: Date.now() - 10 * 86400000 },
+    ];
+    const { keep, gone } = RT.filterExpired(sample, 30);
+    ok(
+      keep.length === 2 && gone.length === 1 && gone[0].id === "b",
+      "filterExpired separa vivos y vencidos"
     );
 
     console.log(`\nResultado: ${passed} ok, ${failed} fallos`);

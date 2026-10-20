@@ -1,6 +1,7 @@
 # Duo 💞
 
-App privada para parejas: chat (texto, fotos, audio y vídeo) y **juegos/retos
+App privada para parejas: chat (texto, fotos, audio y vídeo) con **estados de
+entrega**, **citas y reacciones**, **bloqueo con PIN/huella** y **juegos/retos
 para dos** que se juegan **a distancia** y se sincronizan entre los dos
 teléfonos.
 
@@ -29,8 +30,20 @@ cifrado de extremo a extremo.
   (AsyncStorage) y las fotos, audios y vídeos se descifran y se guardan en el
   almacenamiento local de la app. Cada uno conserva su propia copia, que puede
   **borrar** desde el Perfil (solo la suya).
+- **Bloqueo de la app**: puedes poner **PIN** (4-6 dígitos) y/o **huella**. El
+  PIN **nunca se guarda** (solo su resumen con sal aleatoria) y, si eliges el
+  modo «Solo PIN», la **copia local de mensajes va cifrada** en el dispositivo
+  con una clave derivada del PIN: ni siquiera una copia de seguridad del
+  almacenamiento enseña nada sin él.
+- **Avisos ocultos**: el aviso de mensaje nuevo puede **no enseñar el
+  contenido** (solo «Tienes un mensaje nuevo 🔒»).
+- **Pantalla discreta**: al ir a segundo plano, la app se tapa con una vista
+  falsa de «Notas» (así aparece en el selector de apps).
+- **Auto-destrucción**: la copia local se borra sola a los 7, 30 o 90 días
+  (o nunca, si lo dejas); solo afecta a **tu** teléfono.
 - **Código de verificación SAS** de 6 dígitos (idéntico en las dos pantallas)
-  al vincular, para asegurar que no te enlazaste con la persona equivocada.
+  al vincular, con la **marca «✓ Comprobado»** cuando coincide, para asegurar
+  que no te enlazaste con la persona equivocada.
 
 ## Cómo funciona la conexión
 
@@ -41,6 +54,11 @@ cifrado de extremo a extremo.
   sobre permite **ignorar el eco propio** que devuelve el broker.
 - Si la pareja está desconectada, los mensajes quedan **pendientes aquí** y se
   **reintentan cada 12 s** hasta recibir el ACK de entrega.
+- En cada burbuja se ve el **estado**: ⏳ en cola, ✓ enviado, ✓✓ confirmado por
+  la pareja y ⭕ si falló (con **reintento manual** tocándolo).
+- Manteniendo pulsado un mensaje puedes **responder citándolo** o mandar una de
+  **6 reacciones** (😍😘🔥😂🥺❤️): van cifradas y sincronizadas en los dos
+  teléfonos, y las versiones antiguas las ven como texto normal.
 - Además de texto se pueden enviar **fotos** (de la galería o con la cámara),
   **notas de voz** y **vídeos cortos** (aviso si pesan más de 6 MB): todo se
   cifra en el dispositivo, se trocea (`file-meta`/`file-chunk`) y se reensambla
@@ -104,7 +122,7 @@ No hace falta estar en la misma red; uno crea el vínculo y el otro se une.
 
 ```bash
 npm install
-npm test           # 103 verificaciones (protocolo, relay, juego, archivos, versiones; corren en Node)
+npm test           # 141 verificaciones (protocolo, relay, bloqueo, chat, juego, versiones; corren en Node)
 npx expo start     # desarrollo
 ```
 
@@ -141,8 +159,15 @@ src/services/
   relay.js       # transporte relay por broker público
   version.js     # versión instalada (app.json) + comparación
   updatecheck.js # comprueba el latest de GitHub Releases (aviso in-app)
+  chatcodec.js   # citas y reacciones (JSON __duo) + estados ⏳/⭕/✓/✓✓
+  retention.js   # auto-destrucción local (Nunca/7/30/90 días)
+  applock.js     # bloqueo: PIN (resumen con sal), huella, avisos ocultos, pantalla discreta
+  localvault.js  # cofre: copia local cifrada con la clave derivada del PIN
 src/context/
-  P2PContext.js  # transporte relay + historial + bandeja + archivos + juego compartido (con respuestas) + borrado
+  P2PContext.js  # transporte relay + historial (cofre) + bandeja + estados + archivos + juego compartido (con respuestas) + borrado
+src/components/
+  LockScreen.js    # pad numérico PIN (crear/desbloquear) + huella
+  StealthScreen.js # pantalla discreta (falsa «Notas»)
 test/
   duo-test.mjs   # pruebas (npm test)
 ```

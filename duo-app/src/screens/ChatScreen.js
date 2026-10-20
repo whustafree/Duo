@@ -22,6 +22,11 @@ import { colors, radius, spacing } from "../theme";
 import Avatar from "../components/Avatar";
 import { useSession } from "../context/SessionContext";
 import { useP2P } from "../context/P2PContext";
+import {
+  REACTIONS,
+  deliveryState,
+  STATE_MARK,
+} from "../services/chatcodec";
 
 // Chat cifrado de extremo a extremo: los mensajes salen cifrados de este
 // teléfono y viajan por un relay (broker público) que solo hace de cartero.
@@ -35,7 +40,7 @@ function timeOf(ts) {
   ).padStart(2, "0")}`;
 }
 
-function MessageBubble({ item }) {
+function MessageBubble({ item, partnerName, onLongPress, onRetry }) {
   const mine = item.from === "me";
   const [sound, setSound] = useState(null);
   const [playing, setPlaying] = useState(false);
@@ -75,9 +80,16 @@ function MessageBubble({ item }) {
     }
   };
 
+  const state = deliveryState(item);
+  const badges = Object.keys(item.reactions || {}).join(" ");
+
   return (
     <View style={[styles.row, mine ? styles.rowMe : styles.rowOther]}>
-      <View style={[styles.bubble, mine ? styles.bubbleMe : styles.bubbleOther]}>
+      <Pressable
+        style={[styles.bubble, mine ? styles.bubbleMe : styles.bubbleOther]}
+        onLongPress={() => onLongPress && onLongPress(item)}
+        delayLongPress={350}
+      >
         {item.kind === "photo" ? (
           <Image source={{ uri: item.uri }} style={styles.photo} />
         ) : null}
@@ -103,16 +115,35 @@ function MessageBubble({ item }) {
             <Text style={styles.videoText}>Vídeo · toca para ver</Text>
           </Pressable>
         ) : null}
+        {item.replyTo ? (
+          <View style={[styles.quote, mine && styles.quoteMe]}>
+            <Text
+              style={[styles.quoteWho, mine && styles.quoteWhoMe]}
+              numberOfLines={2}
+            >
+              {item.replyTo.from === "me" ? "Tú" : partnerName}:{" "}
+              {item.replyTo.preview}
+            </Text>
+          </View>
+        ) : null}
         {!item.kind || item.kind === "text" ? (
           <Text style={[styles.msgText, mine && styles.msgTextMe]}>
             {item.text}
           </Text>
         ) : null}
-        <Text style={[styles.time, mine ? styles.timeMe : styles.timeOther]}>
-          {timeOf(item.ts)}
-          {item.pending ? " ⏳" : ""}
-        </Text>
-      </View>
+        {badges ? <Text style={styles.badges}>{badges}</Text> : null}
+        <View style={styles.metaRow}>
+          <Text style={[styles.time, mine ? styles.timeMe : styles.timeOther]}>
+            {timeOf(item.ts)}
+            {mine ? STATE_MARK[state] : ""}
+          </Text>
+          {mine && state === "failed" ? (
+            <Pressable onPress={() => onRetry && onRetry(item.id)} hitSlop={8}>
+              <Text style={styles.retryText}>⭕ Reintentar</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      </Pressable>
       {videoOpen ? (
         <Modal
           visible
@@ -158,9 +189,13 @@ export default function ChatScreen() {
     sendAudio,
     sendVideo,
     sendTyping,
+    sendReaction,
+    retryMessage,
   } = useP2P();
 
   const [text, setText] = useState("");
+  const [replyTo, setReplyTo] = useState(null);
+  const [sheetTarget, setSheetTarget] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [recording, setRecording] = useState(null);
   const [recSecs, setRecSecs] = useState(0);
@@ -182,13 +217,45 @@ export default function ChatScreen() {
     sendTyping(!!value);
   };
 
+  // Vista de un mensaje para citarlo (lo que verá la pareja al responder).
+  const previewOf = (row) => {
+    if (!row) return null;
+    const kind = row.kind || "text";
+    const preview =
+      kind === "photo"
+        ? "📷 Foto"
+        : kind === "audio"
+        ? "🎙 Nota de voz"
+        : kind === "video"
+        ? "🎬 Vídeo"
+        : String(row.text || "").slice(0, 140);
+    return {
+      id: row.id,
+      from: row.from === "me" ? "me" : "them",
+      kind,
+      preview,
+    };
+  };
+
   const send = () => {
     const value = text.trim();
     if (!value) return;
     setText("");
-    sendText(value);
+    sendText(value, replyTo);
+    setReplyTo(null);
     sendTyping(false);
     scrollDown();
+  };
+
+  // Hoja de acciones al mantener pulsado un mensaje: reaccionar o responder.
+  const openSheet = (row) => setSheetTarget(row);
+  const reactTo = (emoji) => {
+    if (sheetTarget) sendReaction(sheetTarget.id, emoji);
+    setSheetTarget(null);
+  };
+  const startReply = () => {
+    setReplyTo(previewOf(sheetTarget));
+    setSheetTarget(null);
   };
 
   // Reducir antes de enviar: así el teléfono viejo también lo procesa rápido
@@ -397,7 +464,14 @@ export default function ChatScreen() {
         ref={listRef}
         data={messages}
         keyExtractor={(m) => m.id}
-        renderItem={({ item }) => <MessageBubble item={item} />}
+        renderItem={({ item }) => (
+          <MessageBubble
+            item={item}
+            partnerName={partnerName}
+            onLongPress={openSheet}
+            onRetry={retryMessage}
+          />
+        )}
         contentContainerStyle={{ padding: spacing.md, paddingBottom: spacing.lg }}
         showsVerticalScrollIndicator={false}
         onContentSizeChange={() =>
@@ -437,6 +511,18 @@ export default function ChatScreen() {
                 <Text style={styles.menuText}>{o.label}</Text>
               </Pressable>
             ))}
+          </View>
+        ) : null}
+        {replyTo ? (
+          <View style={styles.replyBar}>
+            <Ionicons name="return-up-forward" size={16} color={colors.primary} />
+            <Text style={styles.replyBarText} numberOfLines={1}>
+              {(replyTo.from === "me" ? "Tú: " : `${partnerName}: `) +
+                replyTo.preview}
+            </Text>
+            <Pressable onPress={() => setReplyTo(null)} hitSlop={8}>
+              <Ionicons name="close-circle" size={18} color={colors.muted} />
+            </Pressable>
           </View>
         ) : null}
         {recording ? (
@@ -481,6 +567,57 @@ export default function ChatScreen() {
           </View>
         )}
       </KeyboardAvoidingView>
+
+      {/* Hoja de reacciones y responder (mantener pulsado un mensaje) */}
+      {sheetTarget ? (
+        <Modal
+          visible
+          transparent
+          animationType="fade"
+          onRequestClose={() => setSheetTarget(null)}
+        >
+          <Pressable
+            style={styles.sheetBack}
+            onPress={() => setSheetTarget(null)}
+          >
+            <Pressable style={styles.sheet} onPress={() => {}}>
+              <Text style={styles.sheetTitle} numberOfLines={1}>
+                {sheetTarget.kind === "photo"
+                  ? "📷 Foto"
+                  : sheetTarget.kind === "audio"
+                  ? "🎙 Nota de voz"
+                  : sheetTarget.kind === "video"
+                  ? "🎬 Vídeo"
+                  : sheetTarget.text}
+              </Text>
+              <View style={styles.reactRow}>
+                {REACTIONS.map((e) => (
+                  <Pressable
+                    key={e}
+                    style={styles.reactBtn}
+                    onPress={() => reactTo(e)}
+                  >
+                    <Text style={styles.reactEmoji}>{e}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Pressable style={styles.sheetItem} onPress={startReply}>
+                <Ionicons name="return-up-forward" size={20} color={colors.primary} />
+                <Text style={styles.sheetItemText}>Responder</Text>
+              </Pressable>
+              <Pressable
+                style={styles.sheetItem}
+                onPress={() => setSheetTarget(null)}
+              >
+                <Ionicons name="close" size={20} color={colors.muted} />
+                <Text style={[styles.sheetItemText, { color: colors.muted }]}>
+                  Cancelar
+                </Text>
+              </Pressable>
+            </Pressable>
+          </Pressable>
+        </Modal>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -629,4 +766,77 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  quote: {
+    borderLeftWidth: 3,
+    borderLeftColor: "rgba(255,255,255,0.45)",
+    paddingLeft: spacing.sm,
+    marginBottom: 6,
+    backgroundColor: "rgba(0,0,0,0.15)",
+    borderRadius: radius.sm,
+    paddingVertical: 3,
+    paddingHorizontal: spacing.sm,
+  },
+  quoteMe: { borderLeftColor: "#FFD9E0" },
+  quoteWho: { color: colors.muted, fontSize: 12, fontWeight: "700" },
+  quoteWhoMe: { color: "#FFD9E0" },
+  badges: {
+    marginTop: 4,
+    fontSize: 16,
+    alignSelf: "flex-start",
+  },
+  metaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 4,
+    alignSelf: "flex-end",
+  },
+  retryText: { color: "#FFC25E", fontSize: 10, fontWeight: "700" },
+  replyBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  replyBarText: { flex: 1, color: colors.muted, fontSize: 13 },
+  sheetBack: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "flex-end",
+  },
+  sheet: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    padding: spacing.md,
+    paddingBottom: spacing.lg,
+  },
+  sheetTitle: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: "600",
+    marginBottom: spacing.sm,
+  },
+  reactRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: spacing.sm,
+  },
+  reactBtn: {
+    padding: spacing.sm,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceAlt,
+  },
+  reactEmoji: { fontSize: 24 },
+  sheetItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingVertical: spacing.md,
+  },
+  sheetItemText: { color: colors.text, fontSize: 15, fontWeight: "600" },
 });

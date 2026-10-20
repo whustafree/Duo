@@ -2,7 +2,7 @@
 
 Documento que describe **qué estamos haciendo**, cómo está armado y qué falta.
 
-Fecha: 19 de octubre de 2026
+Fecha: 20 de octubre de 2026
 
 ---
 
@@ -41,6 +41,17 @@ Fecha: 19 de octubre de 2026
   hay una más nueva, aparece un aviso para descargarla (cooldown de 6 horas).
 - **Borrado de contenido** local: historial de chat, fotos guardadas o todo, con
   confirmación (solo borra tu copia; la de tu pareja no se toca).
+- **Estados de entrega** en el chat: ⏳ en cola (aún aquí), ✓ enviado al relay,
+  ✓✓ confirmado por la pareja, y ⭕ con **reintento manual** si algo falla.
+- **Citas y reacciones**: mantener pulsado un mensaje para **responder citándolo**
+  o mandar una de **6 reacciones** (😍😘🔥😂🥺❤️); todo cifrado y sincronizado
+  en los dos teléfonos.
+- **Bloqueo de la app** con **PIN** (4-6 dígitos, nunca se guarda el PIN, solo su
+  resumen con sal) y/o **huella**; la copia local de mensajes se puede guardar
+  **cifrada con el PIN** (AES-GCM con clave derivada).
+- **Avisos ocultos** (el aviso no enseña el contenido), **pantalla discreta**
+  (una vista falsa de "Notas" tapa la app al ir a segundo plano) y
+  **auto-destrucción** de mensajes locales (Nunca/7/30/90 días).
 - Persistencia de sesión (no hay que revincular cada vez).
 - Notificaciones locales al recibir mensajes en segundo plano.
 
@@ -70,7 +81,7 @@ duo-app/
 ├── babel.config.js
 ├── package.json            # incluye "npm test" → pruebas del protocolo (relay)
 ├── test/
-│   └── duo-test.mjs        # 103 verificaciones, 0 fallos (relay + cifrado E2E + juego + archivos + versiones + bus en memoria)
+│   └── duo-test.mjs        # 141 verificaciones, 0 fallos (relay + cifrado E2E + juego + archivos + versiones + bloqueo/cofre + chat estructurado + auto-destrucción + bus en memoria)
 └── src/
     ├── theme.js            # Colores, espaciados, tipografía
     ├── config.js           # Enlaces públicos (repo, releases, descarga) e invitación
@@ -94,11 +105,17 @@ duo-app/
     │   ├── mqttws.js           # Cliente MQTT 3.1.1 sobre WebSocket (sin deps)
     │   ├── relayproto.js       # Lógica PURA del relay: temas, QR v2 y sobre
     │   ├── relay.js            # Transporte relay por broker público (API tipo P2P)
-    │   ├── notifications.js    # Notificaciones locales
+    │   ├── notifications.js    # Notificaciones locales (canal heads-up + ocultas)
     │   ├── version.js          # Versión instalada (app.json) + comparación semver
-    │   └── updatecheck.js      # Compara con el latest de GitHub Releases (cooldown 6 h)
-    ├── components/{Avatar,PrimaryButton,ChallengeDeck}.js
+    │   ├── updatecheck.js      # Compara con el latest de GitHub Releases (cooldown 6 h)
+    │   ├── chatcodec.js        # Citas y reacciones (JSON marca __duo) + estados (PURO)
+    │   ├── retention.js        # Auto-destrucción: plazos Nunca/7/30/90 (PURO)
+    │   ├── applock.js          # Bloqueo: PIN (resumen con sal) y/o huella
+    │   └── localvault.js       # Cofre: copia local cifrada (AsyncStorage + AES-GCM)
+    ├── components/{Avatar,PrimaryButton,ChallengeDeck,LockScreen,StealthScreen}.js
     │                           #   ChallengeDeck: lee/escribe el estado compartido
+    │                           #   LockScreen: PIN (crear/desbloquear) + huella
+    │                           #   StealthScreen: pantalla falsa de "Notas"
     └── screens/
         ├── OnboardingScreen.js # Vincular por QR/código pegado + SAS + invitación
         ├── ChatScreen.js       # Chat + fotos/audio/vídeo + typing (todo por relay)
@@ -193,7 +210,7 @@ duo-app/
 ```bash
 cd duo-app
 npm install
-npm test           # pruebas del protocolo y del relay (103 verificaciones)
+npm test           # pruebas del protocolo y del relay (141 verificaciones)
 npx expo start     # escanea el QR con Expo Go
 ```
 
@@ -220,11 +237,12 @@ cd duo-app && eas build -p android --profile preview
 
 ## 5. Estado actual (qué ya está hecho)
 
-Versión actual: **0.6.0** (versionCode 6). Los juegos son **compartidos** y van
-cifrados (ahora con respuestas dentro de los juegos), el chat admite audio,
-vídeo y fotos de cámara, hay aviso de actualizaciones, borrado de contenido y
-enlace de invitación; la Release **v0.5.0** sigue pendiente de compilar y
-publicar.
+Versión actual: **0.7.0** (versionCode 7). Los juegos son **compartidos** y van
+cifrados (con respuestas dentro de los juegos), el chat admite audio, vídeo y
+fotos de cámara, estados ✓/✓✓, citas y reacciones; hay avisos reales con la app
+cerrada, bloqueo con PIN/huella, privacidad configurable, aviso de
+actualizaciones, borrado de contenido y enlace de invitación. Las Releases
+**v0.5.0**, **v0.6.0** y **v0.7.0** ya están publicadas.
 
 - [x] Maqueta completa de UI (todas las pantallas).
 - [x] **Sin servidor propio ni de pago**: chat/fotos/vinculación a través de un
@@ -273,17 +291,48 @@ publicar.
       el `latest` de GitHub Releases; `UpdateModal` al abrir la app o volver a
       primer plano, con cooldown de 6 horas y sin insistir con una versión ya
       descartada; botón que abre la descarga (`…/releases/latest/download/duo.apk`).
+- [x] **Estados de entrega en el chat** (v0.7.0): ⏳ en cola, ✓ enviado al
+      relay, ✓✓ confirmado por la pareja y ⭕ con **reintento manual** (la cola
+      también reintenta sola cada 12 s). `markSent`/`markFailed`/`retryMessage`
+      en P2PContext; marcas en la burbuja (`deliveryState`/`STATE_MARK` en
+      `chatcodec.js`).
+- [x] **Citas y reacciones** (v0.7.0): mantener pulsado un mensaje abre una
+      hoja con **6 reacciones** (😍😘🔥😂🥺❤️) y **«Responder»** (cita con
+      vista previa). Viajan como JSON pequeño con la marca `__duo` v1 dentro
+      del propio texto (`chatcodec.js`), así que **los teléfonos con versión
+      antigua lo ven como texto normal**. Las reacciones se guardan por
+      mensaje con su lado (mía / de la pareja).
+- [x] **Bloqueo de la app** (v0.7.0): **PIN de 4 a 6 dígitos** (se guarda su
+      **resumen con sal aleatoria**, nunca el PIN) y/o **huella**
+      (`expo-local-authentication`). Al crear el PIN se elige «Solo PIN»
+      (**copia local cifrada** con clave derivada del PIN —HKDF + AES-GCM en
+      `localvault.js`—) o «PIN + huella» (huella sin cifrado). Con cifrado
+      activo la copia **no se toca** hasta desbloquear; los ACK se suprimen
+      mientras el cofre esté cerrado para que la pareja reintente y **nada se
+      pierda**. «¿Olvidaste el PIN?» borra la copia local y permite crear uno
+      nuevo (la copia de la pareja no se toca).
+- [x] **Privacidad configurable** (v0.7.0): **avisos ocultos** (el aviso no
+      enseña el contenido, solo «Tienes un mensaje nuevo 🔒»; activados por
+      defecto al crear el bloqueo), **pantalla discreta** (al ir a segundo
+      plano la app se tapa con una vista falsa de «Notas»),
+      **auto-destrucción** de la copia local (Nunca/7/30/90 días,
+      `retention.js`), **huella** y código de verificación con **marca «✓
+      Comprobado»**. Todo desde la sección «Privacidad de la app» del Perfil.
 - [x] Persistencia de sesión + **historial local cifrado en origen** (AsyncStorage).
 - [x] Notificaciones locales.
 - [x] Cifrado E2E **completo** de textos, fotos, audio/vídeo y estado del juego (X25519 + AES-256-GCM).
 - [x] Polyfill de `crypto.getRandomValues` con RNG nativo (expo-crypto).
-- [x] Tests del protocolo (`duo-app/test/duo-test.mjs`, **103 verificaciones, 0
+- [x] Tests del protocolo (`duo-app/test/duo-test.mjs`, **141 verificaciones, 0
       fallos**): identidad/SAS, encuadre, auth E2E, QR v2, temas/sobre del relay,
       mensajes, fotos, **cifrado del estado del juego** (un tercero no lo
       descifra y el reto no viaja en claro; la pareja recibe el juego iniciado),
       **respuestas de juego cifradas**, **troceado de audio/vídeo (`file-*`)**,
-      **comparación de versiones**, **contenido ≥ 20 por nivel y por juego** y
-      una sesión completa sobre un "bus" en memoria que imita al broker.
+      **comparación de versiones**, **contenido ≥ 20 por nivel y por juego**,
+      **bloqueo y cofre** (sal/resumen del PIN, clave derivada, cofre ilegible
+      con clave equivocada), **chat estructurado** (citas, reacciones y
+      compatibilidad con texto plano) y **auto-destrucción** (plazos y
+      filtrado), más una sesión completa sobre un "bus" en memoria que imita al
+      broker.
 - [x] Repo en GitHub: https://github.com/whustafree/Duo
 - [x] Build automático de APK con GitHub Actions (`.github/workflows/build-apk.yml`).
 
@@ -301,11 +350,17 @@ publicar.
       (`GameThread`) y el envío de **audio/vídeo** en el chat.
 - [ ] Probar en **dos teléfonos** el **borrado de contenido** (historial, fotos y
       todo) y el **enlace de invitación** (descarga del APK `duo.apk`).
-- [ ] Publicar la **Release v0.5.0** (juegos compartidos + borrado + invitación +
-      nivel Íntimo; app 0.5.0 / versionCode 5; pendiente de compilar y subir el APK).
-- [ ] Publicar la **Release v0.6.0** (respuestas en juegos + audio/vídeo/cámara
-      en el chat + contenido ampliado + aviso de actualizaciones; app 0.6.0 /
-      versionCode 6; pendiente de compilar y subir el APK).
+- [ ] Probar en **dos teléfonos** el **bloqueo** (PIN/huella: que la app pida el
+      PIN al abrir y al volver de segundo plano; «¿Olvidaste el PIN?») y los
+      **avisos ocultos** (que el aviso no enseñe el contenido).
+- [ ] Probar en **dos teléfonos** la **pantalla discreta** (falsa «Notas» al ir
+      a segundo plano) y la **auto-destrucción** (poner 7 días y ver que borra
+      solo lo vencido, sin tocar la copia de la pareja).
+- [ ] Probar en **dos teléfonos** **responder citando** y **reaccionar** (que la
+      cita conserve el texto original y que las reacciones se vean en los dos),
+      y los **estados ✓/✓✓/⭕** con la pareja abriendo y cerrando la app.
+- [ ] Probar la **compatibilidad**: con una versión antigua instalada, el texto
+      de las citas/reacciones debe verse como mensaje normal.
 - [ ] Más juegos y retos; editar/crear retos propios.
 - [ ] Notificaciones push reales (hoy solo locales).
 - [ ] Publicar en Play Store (firma de release + AAB).
@@ -329,7 +384,15 @@ publicar.
   **estable `duo.apk`**, así el enlace
   `…/releases/latest/download/duo.apk` siempre es válido.
 - `app.json` declara los permisos `RECORD_AUDIO` y `READ_MEDIA_VIDEO`
-  (añadidos en v0.6.0) para las notas de voz y los vídeos del chat.
+  (añadidos en v0.6.0) para las notas de voz y los vídeos del chat, y
+  `USE_BIOMETRIC` y `POST_NOTIFICATIONS` (v0.7.0) para la huella y los avisos.
+- Dependencias nuevas en v0.7.0: `expo-notifications ~0.29.14` (avisos reales
+  con la app cerrada, con canal `duo-mensajes` de prioridad alta) y
+  `expo-local-authentication ~15.0.2` (huella). **Limitaciones conocidas
+  (v0.7.0)**: no hay detección de captura de pantalla (exigiría una cuarta
+  dependencia nativa) y los mensajes que llegan **con la app bloqueada** se
+  muestran al desbloquear (el aviso, en cambio, oculta el contenido si está
+  activado).
 - Hermes no expone `crypto.getRandomValues`: `src/services/polyfills.js` lo
   instala con el RNG nativo **antes** de cualquier uso de `@noble/*`.
 
@@ -349,9 +412,11 @@ publicar.
 - La clave privada **nunca sale** del dispositivo; el código de vinculación solo
   contiene la clave **pública** + un secreto de emparejamiento de un solo uso.
 - Cada dispositivo guarda su **copia local** del historial y de las fotos,
-  audios y vídeos descifrados (almacenamiento de la app). Se pueden **borrar**
-  desde el Perfil (historial, fotos o todo); el borrado afecta **solo a tu
-  copia**, nunca a la de
-  tu pareja. Si se pierde el equipo, se pierden esas claves; la pareja conserva su
-  propia copia.
+  audios y vídeos descifrados (almacenamiento de la app). Con el **bloqueo
+  PIN** activado esa copia se guarda además **cifrada en el propio
+  dispositivo** (clave derivada del PIN; ni una copia de seguridad del
+  almacenamiento enseña nada sin el PIN). Se pueden **borrar** desde el
+  Perfil (historial, fotos o todo); el borrado afecta **solo a tu copia**,
+  nunca a la de tu pareja. Si se pierde el equipo, se pierden esas claves; la
+  pareja conserva su propia copia.
 - El código SAS de 6 dígitos protege contra emparejamientos equivocados.

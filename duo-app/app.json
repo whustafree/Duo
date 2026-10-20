@@ -2,7 +2,7 @@
   "expo": {
     "name": "Duo",
     "slug": "duo-app",
-    "version": "0.6.0",
+    "version": "0.7.0",
     "orientation": "portrait",
     "scheme": "duoapp",
     "userInterfaceStyle": "dark",
@@ -18,7 +18,7 @@
     },
     "android": {
       "package": "com.duo.app",
-      "versionCode": 6,
+      "versionCode": 7,
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.CAMERA",
@@ -26,7 +26,9 @@
         "android.permission.READ_MEDIA_VIDEO",
         "android.permission.RECORD_AUDIO",
         "android.permission.ACCESS_NETWORK_STATE",
-        "android.permission.ACCESS_WIFI_STATE"
+        "android.permission.ACCESS_WIFI_STATE",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.POST_NOTIFICATIONS"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#0E0B14"
