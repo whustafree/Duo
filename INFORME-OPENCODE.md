@@ -498,6 +498,6 @@ node -e "const b=require('@babel/core'),fs=require('fs'),p=require('path');const
     (sin duplicados que corrupten el ensamblado), receptor blindado contra
     metas/trozos fuera de rango y auto-destrucción que **borra también los
     archivos locales**; tests **146 verificaciones, 0 fallos** (bundle Hermes
-    Android 4.23 MB; app `0.7.1`, versionCode `8`).
+    Android 4.23 MB; app `0.7.1`, versionCode `8`). **Publicada.**
 - Tras cambiar dependencias: commit + push y la CI (Actions → Build APK)
   compila y sube el artefacto; descargarlo y publicarlo en el Release.
