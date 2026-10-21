@@ -28,6 +28,7 @@ import {
   STATE_MARK,
 } from "../services/chatcodec";
 import GameInlinePanel from "../components/GameInlinePanel";
+import { GAME_INFO, modeLabel } from "../services/gamecontent";
 
 // Chat cifrado de extremo a extremo: los mensajes salen cifrados de este
 // teléfono y viajan por un relay (broker público) que solo hace de cartero.
@@ -67,6 +68,35 @@ function deliveryDetail(item) {
   if (st === "sent") return "Enviado (esperando a tu pareja)";
   if (st === "failed") return "No se pudo enviar · toca Reintentar";
   return "En cola · se enviará solo";
+}
+
+// Tarjeta de una jugada (verdad, reto, dados, pregunta) dentro del chat.
+// Va en la misma conversación: no hay un chat aparte para los juegos.
+function GameMessage({ item, partnerName }) {
+  const info = GAME_INFO[item.gameId] || { name: "Juego", emoji: "🎮" };
+  const mine = item.from === "me";
+  const dice = Array.isArray(item.dice) ? item.dice : null;
+  return (
+    <View style={styles.gameRow}>
+      <View style={styles.gameCard}>
+        <View style={styles.gameHead}>
+          <Text style={styles.gameTitle}>
+            {info.emoji} {info.name}
+          </Text>
+          <Text style={styles.gameBadge}>{modeLabel(item.mode)}</Text>
+        </View>
+        {dice ? (
+          <Text style={styles.gameDice}>
+            🎲 {dice[0]} + {dice[1]} = {dice[0] + dice[1]}
+          </Text>
+        ) : null}
+        <Text style={styles.gamePrompt}>{item.text}</Text>
+        <Text style={styles.gameWho}>
+          {mine ? "Tú" : partnerName} · {timeOf(item.ts)}
+        </Text>
+      </View>
+    </View>
+  );
 }
 
 function MessageBubble({ item, partnerName, onLongPress, onRetry }) {
@@ -131,6 +161,10 @@ function MessageBubble({ item, partnerName, onLongPress, onRetry }) {
 
   const state = deliveryState(item);
   const badges = Object.keys(item.reactions || {}).join(" ");
+
+  if (item.kind === "game") {
+    return <GameMessage item={item} partnerName={partnerName} />;
+  }
 
   return (
     <View style={[styles.row, mine ? styles.rowMe : styles.rowOther]}>
@@ -249,7 +283,6 @@ export default function ChatScreen() {
     retryMessage,
     gameSession,
     startGame,
-    endGame,
   } = useP2P();
   const [showGamesMenu, setShowGamesMenu] = useState(false);
 
@@ -546,8 +579,8 @@ export default function ChatScreen() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
       >
-        {gameSession && gameSession.gameId ? <GameInlinePanel onClose={() => endGame()} /> : null}
-        {showGamesMenu && !gameSession ? (
+        {gameSession && gameSession.gameId ? <GameInlinePanel /> : null}
+        {showGamesMenu ? (
           <View style={styles.menu}>
             {[
               { icon: "sparkles", label: "Verdad o Reto", id: "verdad" },
@@ -738,6 +771,57 @@ const styles = StyleSheet.create({
   status: { color: colors.success, fontSize: 12, marginTop: 1 },
   statusOnline: { color: "#34D399", fontWeight: "700" },
   statusOffline: { color: colors.muted },
+  gameRow: {
+    alignItems: "center",
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.sm,
+  },
+  gameCard: {
+    width: "100%",
+    maxWidth: 420,
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1.5,
+    borderColor: colors.primary + "55",
+    padding: spacing.md,
+  },
+  gameHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 6,
+  },
+  gameTitle: { color: colors.text, fontWeight: "800", fontSize: 13 },
+  gameBadge: {
+    color: colors.primary,
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 1,
+    backgroundColor: colors.primary + "22",
+    borderRadius: radius.pill,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    overflow: "hidden",
+  },
+  gameDice: {
+    color: colors.text,
+    fontSize: 22,
+    fontWeight: "800",
+    textAlign: "center",
+    marginVertical: 4,
+  },
+  gamePrompt: {
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: "600",
+  },
+  gameWho: {
+    color: colors.muted,
+    fontSize: 10,
+    marginTop: 8,
+    alignSelf: "flex-end",
+  },
   iconBtn: { padding: spacing.sm },
   row: { marginBottom: spacing.sm, flexDirection: "row" },
   rowMe: { justifyContent: "flex-end" },

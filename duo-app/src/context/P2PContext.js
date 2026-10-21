@@ -47,6 +47,7 @@ import {
 } from "../services/chatcodec";
 import { filterExpired, parseTtlDays } from "../services/retention";
 import { shouldHideContent } from "../services/applock";
+import { makeDraw } from "../services/gamecontent";
 import {
   vaultGet,
   vaultSet,
@@ -305,7 +306,10 @@ export function P2PProvider({ children }) {
         // Al volver a primer plano, confirmamos lectura de lo que llegó
         // mientras la app estaba en segundo plano (doble check verde).
         const pendingRead = (msgsRef.current || []).filter(
-          (m) => m.from === "them" && !readSentRef.current.has(m.id)
+          (m) =>
+            m.from === "them" &&
+            m.kind !== "game" &&
+            !readSentRef.current.has(m.id)
         );
         if (pendingRead.length && vaultIsReady()) {
           pendingRead.slice(-40).forEach((m) => {
@@ -585,6 +589,7 @@ export function P2PProvider({ children }) {
         level,
         prompt: null,
         mode: null,
+        dice: null,
         replies: [],
         host: "me",
         ts: Date.now(),
@@ -605,6 +610,7 @@ export function P2PProvider({ children }) {
         level,
         prompt: null,
         mode: null,
+        dice: null,
         host: "me",
         ts: Date.now(),
       };
@@ -615,15 +621,50 @@ export function P2PProvider({ children }) {
     [sendGame]
   );
 
+  // Cada jugada elige contenido REAL del nivel (verdad, reto, pregunta o dados)
+  // y lo publica como un mensaje más del chat, para los dos teléfonos.
   const drawGame = useCallback(
-    (prompt, mode = null) => {
+    (mode = "roll") => {
       const prev = gameRef.current || {};
-      const s = { ...prev, prompt, mode, host: "me", ts: Date.now() };
+      if (!prev.gameId) return null;
+      const level = prev.level || 1;
+      const draw = makeDraw(prev.gameId, level, mode, prev.prompt);
+      if (!draw.text) return null;
+      const ts = Date.now();
+      const s = {
+        ...prev,
+        prompt: draw.text,
+        mode: draw.mode,
+        dice: draw.dice,
+        host: "me",
+        ts,
+      };
       gameRef.current = s;
       setGameSession(s);
-      sendGame({ k: "draw", gameId: s.gameId, level: s.level, prompt, mode });
+      appendMessage({
+        id: `gmsg:${prev.gameId}:${ts}`,
+        from: "me",
+        kind: "game",
+        gameId: prev.gameId,
+        mode: draw.mode,
+        dice: draw.dice,
+        level,
+        text: draw.text,
+        ts,
+        pending: false,
+      });
+      sendGame({
+        k: "draw",
+        gameId: prev.gameId,
+        level,
+        prompt: draw.text,
+        mode: draw.mode,
+        dice: draw.dice,
+        ts,
+      });
+      return s;
     },
-    [sendGame]
+    [appendMessage, sendGame]
   );
 
   // Respuesta al reto/pregunta: cualquiera de los dos puede contestar y se
@@ -723,6 +764,7 @@ export function P2PProvider({ children }) {
             : g.mode !== undefined
             ? g.mode
             : prev?.mode ?? null,
+        dice: g.dice !== undefined ? g.dice : prev?.dice ?? null,
         host: "them",
         ts: Date.now(),
       };
@@ -733,10 +775,28 @@ export function P2PProvider({ children }) {
           `🎮 ${sessionRef.current?.partnerName || "Tu pareja"} quiere jugar contigo`
         );
       }
+      // La jugada de la pareja también aparece como mensaje en el chat. El id
+      // se deriva del sello de la jugada, así los dos teléfonos ven el mismo
+      // mensaje una sola vez (y los avisos de sincronización no lo duplican).
+      if (g.k === "draw" && s.gameId && g.prompt && g.ts) {
+        appendMessage({
+          id: `gmsg:${s.gameId}:${g.ts}`,
+          from: "them",
+          kind: "game",
+          gameId: s.gameId,
+          mode: s.mode,
+          dice: s.dice,
+          level: s.level,
+          text: String(g.prompt),
+          ts: g.ts,
+          pending: false,
+        });
+        notifyIfBackground(`🎮 ${sessionRef.current?.partnerName || "Tu pareja"} jugó`);
+      }
       gameRef.current = s;
       setGameSession(s);
     },
-    [priv, partnerPub, notifyIfBackground]
+    [priv, partnerPub, notifyIfBackground, appendMessage]
   );
 
   // ------------------------------------------------------------- chat ------

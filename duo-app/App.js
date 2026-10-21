@@ -20,7 +20,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { colors } from "./src/theme";
 import { SessionProvider, useSession } from "./src/context/SessionContext";
 import { E2EProvider } from "./src/context/E2EContext";
-import { P2PProvider, useP2P } from "./src/context/P2PContext";
+import { P2PProvider } from "./src/context/P2PContext";
 import UpdateModal from "./src/components/UpdateModal";
 import LockScreen from "./src/components/LockScreen";
 import StealthScreen from "./src/components/StealthScreen";
@@ -31,12 +31,7 @@ import {
 } from "./src/services/applock";
 import OnboardingScreen from "./src/screens/OnboardingScreen";
 import ChatScreen from "./src/screens/ChatScreen";
-import GamesScreen from "./src/screens/GamesScreen";
 import ProfileScreen from "./src/screens/ProfileScreen";
-import TruthDareScreen from "./src/screens/TruthDareScreen";
-import ChallengeScreen from "./src/screens/ChallengeScreen";
-import DiceScreen from "./src/screens/DiceScreen";
-import QuestionsScreen from "./src/screens/QuestionsScreen";
 
 const navTheme = {
   ...DefaultTheme,
@@ -57,16 +52,8 @@ const Tab = createBottomTabNavigator();
 
 const navigationRef = createNavigationContainerRef();
 
-const GAME_ROUTES = {
-  verdad: "TruthDare",
-  ruleta: "Challenge",
-  dados: "Dice",
-  preguntas: "Questions",
-};
-
 const TAB_ICONS = {
   Chat: "chatbubbles",
-  Juegos: "game-controller",
   Nosotros: "heart",
 };
 
@@ -95,7 +82,6 @@ function MainTabs() {
       })}
     >
       <Tab.Screen name="Chat" component={ChatScreen} />
-      <Tab.Screen name="Juegos" component={GamesScreen} />
       <Tab.Screen name="Nosotros" component={ProfileScreen} />
     </Tab.Navigator>
   );
@@ -103,18 +89,6 @@ function MainTabs() {
 
 function Root() {
   const { session, ready } = useSession();
-  const { incomingGame, clearIncomingGame } = useP2P();
-
-  // Cuando la pareja inicia un juego, lo abrimos en este teléfono para que lo
-  // vean los dos a la vez (aunque estén en ciudades distintas).
-  useEffect(() => {
-    if (!incomingGame || !session) return;
-    const route = GAME_ROUTES[incomingGame.gameId];
-    if (route && navigationRef.isReady()) {
-      navigationRef.navigate(route);
-      clearIncomingGame();
-    }
-  }, [incomingGame, session, clearIncomingGame]);
 
   if (!ready) {
     return (
@@ -146,26 +120,6 @@ function Root() {
           name="Main"
           component={MainTabs}
           options={{ headerShown: false }}
-        />
-        <Stack.Screen
-          name="TruthDare"
-          component={TruthDareScreen}
-          options={{ title: "Verdad o Reto" }}
-        />
-        <Stack.Screen
-          name="Challenge"
-          component={ChallengeScreen}
-          options={{ title: "Ruleta de Retos" }}
-        />
-        <Stack.Screen
-          name="Dice"
-          component={DiceScreen}
-          options={{ title: "Dados del Deseo" }}
-        />
-        <Stack.Screen
-          name="Questions"
-          component={QuestionsScreen}
-          options={{ title: "Para Conocernos" }}
         />
       </Stack.Navigator>
     </NavigationContainer>

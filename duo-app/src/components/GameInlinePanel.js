@@ -1,151 +1,138 @@
-import { useState } from "react";
 import {
   View,
   Text,
   StyleSheet,
   Pressable,
-  TextInput,
   ScrollView,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing } from "../theme";
-import { games } from "../data/mock";
+import { challengeLevels } from "../data/mock";
+import { GAME_INFO, modeLabel } from "../services/gamecontent";
 import { useP2P } from "../context/P2PContext";
 
-const GAME_META = {
-  verdad: { name: "Verdad o Reto", emoji: "🎭" },
-  ruleta: { name: "Ruleta de Retos", emoji: "🎡" },
-  dados: { name: "Dados del Deseo", emoji: "🎲" },
-  preguntas: { name: "Para Conocernos", emoji: "💬" },
-};
-
-export default function GameInlinePanel({ onClose }) {
-  const {
-    gameSession,
-    startGame,
-    setGameLevel,
-    drawGame,
-    sendGameReply,
-    endGame,
-  } = useP2P();
-  const [reply, setReply] = useState("");
+// Panel compacto de juego DENTRO del chat. No tiene chat propio: los resultados
+// y las respuestas van como mensajes normales en la conversación de siempre.
+export default function GameInlinePanel() {
+  const { gameSession, setGameLevel, drawGame, endGame } = useP2P();
 
   if (!gameSession || !gameSession.gameId) return null;
 
-  const meta = GAME_META[gameSession.gameId] || games.find((g) => g.id === gameSession.gameId) || { name: gameSession.gameId, emoji: "🎮" };
-  const replies = gameSession.replies || [];
-
-  const handleAction = (type) => {
-    // Acciones rápidas según juego
-    if (gameSession.gameId === "verdad") {
-      drawGame(type === "truth" ? "Verdad" : "Reto", type);
-      return;
-    }
-    if (gameSession.gameId === "ruleta") {
-      drawGame("Gira la ruleta", "spin");
-      return;
-    }
-    if (gameSession.gameId === "dados") {
-      drawGame("Tira los dados", "roll");
-      return;
-    }
-    if (gameSession.gameId === "preguntas") {
-      drawGame("Pregunta", "question");
-      return;
-    }
+  const info = GAME_INFO[gameSession.gameId] || {
+    name: gameSession.gameId,
+    emoji: "🎮",
   };
+  const level = gameSession.level || 1;
+  const levelMeta =
+    challengeLevels.find((l) => l.id === level) || challengeLevels[0];
+  const gameId = gameSession.gameId;
 
-  const sendReply = () => {
-    const t = reply.trim();
-    if (!t) return;
-    sendGameReply(t);
-    setReply("");
-  };
-
-  const handleEnd = () => {
-    endGame();
-    onClose && onClose();
+  const play = (mode) => {
+    drawGame(mode);
   };
 
   return (
     <View style={styles.wrap}>
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Text style={styles.emoji}>{meta.emoji}</Text>
+          <Text style={styles.emoji}>{info.emoji}</Text>
           <View>
-            <Text style={styles.title}>{meta.name}</Text>
-            {gameSession.level ? (
-              <Text style={styles.sub}>Nivel {gameSession.level}</Text>
-            ) : null}
+            <Text style={styles.title}>{info.name}</Text>
+            <Text style={styles.sub}>
+              {levelMeta.emoji} Nivel {levelMeta.name}
+              {gameSession.prompt ? ` · ${modeLabel(gameSession.mode)}` : ""}
+            </Text>
           </View>
         </View>
-        <Pressable onPress={handleEnd} hitSlop={8}>
+        <Pressable
+          onPress={() => {
+            endGame();
+          }}
+          hitSlop={10}
+        >
           <Ionicons name="close-circle" size={22} color={colors.muted} />
         </Pressable>
       </View>
 
-      {gameSession.prompt ? (
-        <View style={styles.promptBox}>
-          <Text style={styles.promptText}>{gameSession.prompt}</Text>
-        </View>
-      ) : (
-        <View style={styles.promptBox}>
-          <Text style={styles.promptText}>¡Listos para jugar! Pulsa una acción para empezar.</Text>
-        </View>
-      )}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.levels}
+      >
+        {challengeLevels.map((l) => {
+          const active = l.id === level;
+          return (
+            <Pressable
+              key={l.id}
+              onPress={() => setGameLevel(l.id)}
+              style={[
+                styles.levelChip,
+                active && {
+                  backgroundColor: l.color + "22",
+                  borderColor: l.color,
+                },
+              ]}
+            >
+              <Text style={styles.levelEmoji}>{l.emoji}</Text>
+              <Text
+                style={[
+                  styles.levelText,
+                  active && { color: l.color, fontWeight: "800" },
+                ]}
+              >
+                {l.name}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
 
       <View style={styles.actions}>
-        {gameSession.gameId === "verdad" ? (
+        {gameId === "verdad" ? (
           <>
-            <Pressable style={styles.actionBtn} onPress={() => handleAction("truth")}>
+            <Pressable
+              style={[styles.actionBtn, { backgroundColor: colors.accent }]}
+              onPress={() => play("truth")}
+            >
               <Text style={styles.actionText}>Verdad</Text>
             </Pressable>
-            <Pressable style={styles.actionBtn} onPress={() => handleAction("dare")}>
+            <Pressable
+              style={[styles.actionBtn, { backgroundColor: colors.primary }]}
+              onPress={() => play("dare")}
+            >
               <Text style={styles.actionText}>Reto</Text>
             </Pressable>
           </>
-        ) : gameSession.gameId === "ruleta" ? (
-          <Pressable style={styles.actionBtnWide} onPress={() => handleAction("spin")}>
+        ) : gameId === "ruleta" ? (
+          <Pressable
+            style={[styles.actionBtn, { backgroundColor: colors.primary }]}
+            onPress={() => play("spin")}
+          >
+            <Ionicons name="sync-circle" size={18} color={colors.white} />
             <Text style={styles.actionText}>Girar ruleta</Text>
           </Pressable>
-        ) : gameSession.gameId === "dados" ? (
-          <Pressable style={styles.actionBtnWide} onPress={() => handleAction("roll")}>
+        ) : gameId === "dados" ? (
+          <Pressable
+            style={[styles.actionBtn, { backgroundColor: colors.primary }]}
+            onPress={() => play("roll")}
+          >
+            <Ionicons name="dice" size={18} color={colors.white} />
             <Text style={styles.actionText}>Tirar dados</Text>
           </Pressable>
-        ) : gameSession.gameId === "preguntas" ? (
-          <Pressable style={styles.actionBtnWide} onPress={() => handleAction("question")}>
+        ) : gameId === "preguntas" ? (
+          <Pressable
+            style={[styles.actionBtn, { backgroundColor: colors.primary }]}
+            onPress={() => play("question")}
+          >
+            <Ionicons name="help-circle" size={18} color={colors.white} />
             <Text style={styles.actionText}>Nueva pregunta</Text>
           </Pressable>
         ) : null}
       </View>
 
-      {replies.length > 0 ? (
-        <ScrollView style={styles.replies} showsVerticalScrollIndicator={false}>
-          {replies.slice(-6).map((r, idx) => (
-            <View
-              key={`${r.ts}-${idx}`}
-              style={[styles.replyRow, r.from === "me" ? styles.replyMe : styles.replyThem]}
-            >
-              <Text style={styles.replyText}>{r.text}</Text>
-            </View>
-          ))}
-        </ScrollView>
-      ) : null}
-
-      <View style={styles.replyBar}>
-        <TextInput
-          value={reply}
-          onChangeText={setReply}
-          placeholder="Responder al reto/pregunta..."
-          placeholderTextColor={colors.muted}
-          style={styles.replyInput}
-          onSubmitEditing={sendReply}
-          returnKeyType="send"
-        />
-        <Pressable style={styles.replySend} onPress={sendReply}>
-          <Ionicons name="send" size={16} color={colors.white} />
-        </Pressable>
-      </View>
+      <Text style={styles.hint}>
+        El resultado aparece en el chat. Responde ahí mismo 💬
+      </Text>
     </View>
   );
 }
@@ -172,75 +159,38 @@ const styles = StyleSheet.create({
   },
   emoji: { fontSize: 22 },
   title: { color: colors.text, fontWeight: "700", fontSize: 15 },
-  sub: { color: colors.muted, fontSize: 11 },
-  promptBox: {
+  sub: { color: colors.muted, fontSize: 11, marginTop: 1 },
+  levels: { gap: spacing.sm, paddingBottom: spacing.sm },
+  levelChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+    borderWidth: 1.5,
+    borderColor: colors.border,
     backgroundColor: colors.surfaceAlt,
-    borderRadius: radius.md,
-    padding: spacing.sm,
-    marginBottom: spacing.sm,
   },
-  promptText: { color: colors.text, fontSize: 14, lineHeight: 20 },
+  levelEmoji: { fontSize: 13, marginRight: 4 },
+  levelText: { color: colors.muted, fontSize: 12, fontWeight: "600" },
   actions: {
     flexDirection: "row",
     gap: spacing.sm,
-    marginBottom: spacing.sm,
   },
   actionBtn: {
     flex: 1,
-    backgroundColor: colors.primary,
-    borderRadius: radius.pill,
-    alignItems: "center",
-    paddingVertical: 8,
-  },
-  actionBtnWide: {
-    flex: 1,
-    backgroundColor: colors.primary,
-    borderRadius: radius.pill,
-    alignItems: "center",
-    paddingVertical: 8,
-  },
-  actionText: { color: colors.white, fontWeight: "700", fontSize: 14 },
-  replies: {
-    maxHeight: 90,
-    marginBottom: spacing.sm,
-  },
-  replyRow: {
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: radius.sm,
-    marginBottom: 4,
-    alignSelf: "flex-start",
-    maxWidth: "90%",
-  },
-  replyMe: {
-    alignSelf: "flex-end",
-    backgroundColor: colors.primary + "22",
-  },
-  replyThem: {
-    alignSelf: "flex-start",
-    backgroundColor: colors.surfaceAlt,
-  },
-  replyText: { color: colors.text, fontSize: 13 },
-  replyBar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.sm,
-  },
-  replyInput: {
-    flex: 1,
-    backgroundColor: colors.surfaceAlt,
-    borderRadius: radius.lg,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 6,
-    color: colors.text,
-    fontSize: 13,
-  },
-  replySend: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: colors.primary,
-    alignItems: "center",
     justifyContent: "center",
+    gap: 6,
+    borderRadius: radius.pill,
+    paddingVertical: 9,
+  },
+  actionText: { color: colors.white, fontWeight: "800", fontSize: 14 },
+  hint: {
+    color: colors.muted,
+    fontSize: 11,
+    textAlign: "center",
+    marginTop: spacing.sm,
   },
 });
