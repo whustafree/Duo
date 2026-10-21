@@ -96,9 +96,11 @@ export function decodeChat(raw) {
 //   queued   -> aún no ha salido de este teléfono (reloj)
 //   failed   -> se intentó y falló (arro de reintento)
 //   sent     -> publicado en el relay, esperando a la pareja (✓)
-//   delivered-> la pareja lo confirmó (✓✓)
+//   delivered-> la pareja lo recibió (✓✓)
+//   read     -> la pareja lo leyó con la app abierta (✓✓ verde)
 export function deliveryState(row) {
   if (!row || row.from !== "me") return "received";
+  if (row.read) return "read";
   if (row.pending === false) return "delivered";
   if (row.failed) return "failed";
   if (row.sent) return "sent";
@@ -111,4 +113,5 @@ export const STATE_MARK = {
   failed: " ⭕",
   sent: " ✓",
   delivered: " ✓✓",
+  read: " ✓✓",
 };

@@ -27,6 +27,7 @@ import {
   buildMsg,
   buildTyping,
   buildAck,
+  buildRead,
   buildGame,
   readGame,
   iterFileFrames,
@@ -110,7 +111,7 @@ function pushTokenKey(coupleId) {
 // entero en base64 congelaba la app y podía cerrarla por memoria; sin la pausa
 // entre trozos, los ~170 trozos de un vídeo de 6 MB se publicaban de golpe y
 // bloqueaban la interfaz segundos.
-const MAX_FILE_BYTES = 6 * 1024 * 1024;
+const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB para vídeos/fotos/note voices (MQTT relay, troceado)
 const CHUNK_DELAY_MS = 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const mbOf = (bytes) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -126,13 +127,14 @@ export function P2PProvider({ children }) {
   const [gameSession, setGameSession] = useState(null); // {gameId, level, prompt, host, ts}
   const [incomingGame, setIncomingGame] = useState(null); // {gameId, level, ts}
   const [partnerOnline, setPartnerOnline] = useState(true); // optimista: sin push hasta prueba de lo contrario
+  const [partnerLastSeen, setPartnerLastSeen] = useState(0); // última vez que la pareja estuvo en línea
 
   const relayRef = useRef(null);
   const assemblerRef = useRef(new PhotoAssembler());
   const idsRef = useRef(new Set());
   const msgsRef = useRef([]);
   const loadedRef = useRef(false);
-  const sendingRef = useRef(new Set()); // filas con envío en curso (no re-lanzar)
+  const sendingRef = useRef(new Map()); // filas con envío en curso (id -> {ts, kind})
   const typingTimer = useRef(null);
   const sessionRef = useRef(session);
   const keysRef = useRef(keys);
@@ -142,6 +144,7 @@ export function P2PProvider({ children }) {
   const gameRef = useRef(null);
   const sendGameRef = useRef(() => false);
   const partnerOnlineRef = useRef(true);
+  const readSentRef = useRef(new Set()); // ids de mensajes recibidos ya confirmados como leídos
   const myPushTokenRef = useRef(null);
   const partnerPushTokenRef = useRef(null);
   const lastWakePushRef = useRef(0);
@@ -230,7 +233,10 @@ export function P2PProvider({ children }) {
     relayRef.current = relay;
     relay.onEvent((type, data) => {
       if (type === "status") setStatus(data);
-      else if (type === "presence") setPartnerOnline(!!data.online);
+      else if (type === "presence") {
+        setPartnerOnline(!!data.online);
+        if (data.lastSeenAt) setPartnerLastSeen(data.lastSeenAt);
+      }
       else if (type === "session") {
         flushRef.current();
         // Con la sesión en línea anuncio mi token de push: así la pareja
@@ -294,18 +300,50 @@ export function P2PProvider({ children }) {
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (st) => {
-      if (st === "active") relayRef.current?.wake();
+      if (st === "active") {
+        relayRef.current?.wake();
+        // Al volver a primer plano, confirmamos lectura de lo que llegó
+        // mientras la app estaba en segundo plano (doble check verde).
+        const pendingRead = (msgsRef.current || []).filter(
+          (m) => m.from === "them" && !readSentRef.current.has(m.id)
+        );
+        if (pendingRead.length && vaultIsReady()) {
+          pendingRead.slice(-40).forEach((m) => {
+            readSentRef.current.add(m.id);
+            sendFrame(buildRead(m.id));
+          });
+        }
+      }
     });
     return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Reintento periódico mientras estamos en línea: entrega diferida fiable.
+  // También limpia envíos atascados (OOM/crash al enviar vídeo) para que
+  // el chat vuelva a funcionar.
   useEffect(() => {
     const iv = setInterval(() => {
-      if (statusRef.current === "online") flushRef.current();
+      if (statusRef.current === "online") {
+        // Limpiar envíos atascados > 3 minutos
+        const now = Date.now();
+        for (const [id, info] of sendingRef.current) {
+          if (info?.ts && now - info.ts > 180000) {
+            sendingRef.current.delete(id);
+            setMessages((prev) => {
+              const next = prev.map((m) =>
+                m.id === id && m.pending ? { ...m, failed: true } : m
+              );
+              persist(next);
+              return next;
+            });
+          }
+        }
+        flushRef.current();
+      }
     }, RETRY_INTERVAL);
     return () => clearInterval(iv);
-  }, []);
+  }, [persist]);
 
   // Respaldo en segundo plano: si Android ha congelado el socket al
   // minimizar, cada ~15 min el sistema despierta esta tarea, reconectamos y
@@ -408,7 +446,29 @@ export function P2PProvider({ children }) {
     (id) => {
       setMessages((prev) => {
         const next = prev.map((m) =>
-          m.id === id && m.pending ? { ...m, pending: false } : m
+          m.id === id && m.pending ? { ...m, pending: false, deliveredAt: Date.now() } : m
+        );
+        persist(next);
+        return next;
+      });
+    },
+    [persist]
+  );
+
+  const markRead = useCallback(
+    (id) => {
+      setMessages((prev) => {
+        const next = prev.map((m) =>
+          m.id === id && m.from === "me"
+            ? {
+                ...m,
+                pending: false,
+                sent: true,
+                read: true,
+                deliveredAt: m.deliveredAt || Date.now(),
+                readAt: m.readAt || Date.now(),
+              }
+            : m
         );
         persist(next);
         return next;
@@ -698,28 +758,43 @@ export function P2PProvider({ children }) {
             if (typeof info.size === "number" && info.size > MAX_FILE_BYTES) {
               return false;
             }
-            const b64 = await FileSystem.readAsStringAsync(row.uri, {
-              encoding: FileSystem.EncodingType.Base64,
-            });
+            // Leer con protección: videos grandes pueden colapsar la app
+            let b64;
+            try {
+              b64 = await FileSystem.readAsStringAsync(row.uri, {
+                encoding: FileSystem.EncodingType.Base64,
+              });
+            } catch (e) {
+              console.warn("[p2pctx] no se pudo leer archivo para enviar:", e?.message);
+              return false;
+            }
+            if (!b64 || b64.length === 0) return false;
             const enc = encryptBytes(b64ToBytes(b64), priv, partnerPub);
             if (!enc) return false;
+            b64 = null; // liberar memoria
             const ext = extOf(row.uri, row.kind);
             // Trozo a trozo con una pausa mínima entre envíos (generador: sin
             // copiar el cifrado entero en memoria): la interfaz respira y el
             // socket da tiempo a drenar. Antes el envío entero seguido
             // congelaba la app durante segundos.
-            for (const f of iterFileFrames(
-              row.id,
-              row.kind,
-              ext,
-              enc.nonceB64,
-              enc.cipherB64
-            )) {
-              if (!sendFrame(f)) return false;
-              if (f.t === "file-chunk") await sleep(CHUNK_DELAY_MS);
+            try {
+              for (const f of iterFileFrames(
+                row.id,
+                row.kind,
+                ext,
+                enc.nonceB64,
+                enc.cipherB64
+              )) {
+                if (!sendFrame(f)) return false;
+                if (f.t === "file-chunk") await sleep(CHUNK_DELAY_MS * 2);
+              }
+              return true;
+            } catch (e) {
+              console.warn("[p2pctx] error enviando archivo troceado:", e?.message);
+              return false;
             }
-            return true;
-          } catch {
+          } catch (e) {
+            console.warn("[p2pctx] sendFrameFor archivo error:", e?.message);
             return false;
           }
         })();
@@ -738,9 +813,21 @@ export function P2PProvider({ children }) {
   const dispatchRow = useCallback(
     (row) => {
       if (sendingRef.current.has(row.id)) return false;
-      sendingRef.current.add(row.id);
-      const done = () => sendingRef.current.delete(row.id);
-      const ok = sendFrameFor(row);
+      sendingRef.current.set(row.id, { ts: Date.now(), kind: row.kind });
+      const done = () => {
+        try {
+          sendingRef.current.delete(row.id);
+        } catch {}
+      };
+      let ok;
+      try {
+        ok = sendFrameFor(row);
+      } catch (e) {
+        console.warn("[p2pctx] dispatchRow sync error:", e?.message);
+        done();
+        markFailed(row.id);
+        return false;
+      }
       // Si la pareja está desconectada (app minimizada/cerrada), además del
       // relay le mandamos el aviso genérico que despierta su app (push).
       if (!partnerOnlineRef.current) maybeWakePush();
@@ -750,10 +837,13 @@ export function P2PProvider({ children }) {
         else markFailed(row.id);
       };
       if (ok && typeof ok.then === "function") {
-        return ok.then(settle).catch(() => {
-          done();
-          markFailed(row.id);
-        });
+        return ok
+          .then(settle)
+          .catch((e) => {
+            console.warn("[p2pctx] dispatchRow error:", e?.message);
+            done();
+            markFailed(row.id);
+          });
       }
       settle(ok);
       return ok;
@@ -765,14 +855,22 @@ export function P2PProvider({ children }) {
   // segundos mientras la app esté abierta y en línea).
   const retryMessage = useCallback(
     (id) => {
-      if (sendingRef.current.has(id)) return false; // ya se está enviando
+      if (sendingRef.current.has(id)) {
+        // Forzar limpieza si está muy viejo
+        const info = sendingRef.current.get(id);
+        if (info?.ts && Date.now() - info.ts > 120000) {
+          sendingRef.current.delete(id);
+        } else {
+          return false;
+        }
+      }
       const row = msgsRef.current.find(
         (m) => m.id === id && m.from === "me" && m.pending
       );
       if (!row) return false;
       setMessages((prev) => {
         const next = prev.map((m) =>
-          m.id === id ? { ...m, failed: false } : m
+          m.id === id ? { ...m, failed: false, sent: false } : m
         );
         persist(next);
         return next;
@@ -851,7 +949,11 @@ export function P2PProvider({ children }) {
       (m) => m.from === "me" && m.pending && !sendingRef.current.has(m.id)
     );
     for (const row of rows) {
-      dispatchRow(row);
+      try {
+        dispatchRow(row);
+      } catch (e) {
+        console.warn("[p2pctx] flush error:", e?.message);
+      }
     }
   }, [dispatchRow]);
   flushRef.current = flushOutbox;
@@ -903,8 +1005,10 @@ export function P2PProvider({ children }) {
               : kind === "audio"
               ? "La nota de voz"
               : "El archivo"
-          } pesa ${mbOf(size)} y el máximo para enviar son 6 MB. ${
-            kind === "video" ? "Recórtalo" : "Elige uno más pequeño"
+          } pesa ${mbOf(size)} y el máximo para enviar son ${Math.round(
+            MAX_FILE_BYTES / (1024 * 1024)
+          )} MB. ${
+            kind === "video" ? "Recórtalo o envíalo en menor calidad" : "Elige uno más pequeño"
           } e inténtalo de nuevo.`
         );
         return null;
@@ -987,12 +1091,23 @@ export function P2PProvider({ children }) {
         });
         if (added) {
           notifyIfBackground(decoded.text || "💬 Nuevo mensaje");
+          // Recibo de lectura: si la app está abierta, avisamos a la pareja
+          // de que ya lo leímos (doble check verde).
+          if (vaultIsReady() && AppState.currentState === "active") {
+            readSentRef.current.add(got.id);
+            sendFrame(buildRead(got.id));
+          }
         }
         return;
       }
 
       if (frame.t === "ack") {
         markDelivered(frame.id);
+        return;
+      }
+
+      if (frame.t === "read") {
+        markRead(frame.id);
         return;
       }
 
@@ -1047,6 +1162,10 @@ export function P2PProvider({ children }) {
               ? "🎬 Te envió un vídeo"
               : "📷 Te envió una foto"
           );
+          if (vaultIsReady() && AppState.currentState === "active") {
+            readSentRef.current.add(done.id);
+            sendFrame(buildRead(done.id));
+          }
         }
       }
     },
@@ -1055,6 +1174,7 @@ export function P2PProvider({ children }) {
       partnerPub,
       appendMessage,
       markDelivered,
+      markRead,
       notifyIfBackground,
       sendFrame,
       handleGameFrame,
@@ -1152,6 +1272,7 @@ export function P2PProvider({ children }) {
         ready: !!(priv && myPub),
         status, // offline | connecting | online
         partnerOnline, // presencia de la pareja (baliza retenida del relay)
+        partnerLastSeen, // hora de la última conexión de la pareja (0 = desconocida)
         messages,
         typing,
         sendText,

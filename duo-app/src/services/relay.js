@@ -92,6 +92,7 @@ export class Relay {
     this.presenceSelf = null; // tema retenido con NUESTRA baliza
     this.presencePartner = null; // tema retenido con la baliza de la pareja
     this.presenceTs = 0; // ts de la última baliza recibida de la pareja
+    this.lastSeenAt = 0; // última vez que vimos a la pareja online
     this.presenceTimer = null;
   }
 
@@ -121,6 +122,7 @@ export class Relay {
       this.presenceSelf = null;
       this.presencePartner = null;
       this.presenceTs = 0;
+      this.lastSeenAt = 0;
       this.setPartnerOnline(false);
       if (this.chatTopicValue) {
         try {
@@ -322,6 +324,9 @@ export class Relay {
       // Caducidad: si la baliza de la pareja lleva demasiado sin renovarse,
       // la damos por caída (y dejamos de enviar push a su teléfono).
       if (this.presenceTs && isPresenceStale(this.presenceTs)) {
+        if (this.partnerOnline) {
+          this.lastSeenAt = this.presenceTs || Date.now();
+        }
         this.presenceTs = 0;
         this.setPartnerOnline(false);
       }
@@ -343,9 +348,17 @@ export class Relay {
   }
 
   setPartnerOnline(v) {
-    if (this.partnerOnline === v) return;
+    if (!v && this.presenceTs) {
+      // Al pasar a desconectada recordamos la última baliza conocida.
+      this.lastSeenAt = this.presenceTs;
+    }
+    if (this.partnerOnline === v) {
+      // Aunque no cambie el estado, la UI necesita la hora de la última vez.
+      this.emit("presence", { online: v, lastSeenAt: this.lastSeenAt });
+      return;
+    }
     this.partnerOnline = v;
-    this.emit("presence", { online: v });
+    this.emit("presence", { online: v, lastSeenAt: this.lastSeenAt });
   }
 
   // Envía por el relay con QoS 1: el broker encola para la sesión de la

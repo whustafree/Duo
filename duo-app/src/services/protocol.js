@@ -254,6 +254,10 @@ export function buildAck(id) {
   return { t: "ack", v: PROTOCOL_VERSION, id };
 }
 
+export function buildRead(id) {
+  return { t: "read", v: PROTOCOL_VERSION, id };
+}
+
 export function buildPing() {
   return { t: "ping", v: PROTOCOL_VERSION };
 }
@@ -271,7 +275,7 @@ export const PHOTO_CHUNK = 48000; // caracteres base64 por trama (~36 KB binario
 // Tope de seguridad del receptor: ~6 MB en binario dejan margen de sobra para
 // los archivos de la app (máx. 6 MB) y evitan que un emisor roto o malicioso
 // anuncie miles de trozos y cuelgue el ensamblado.
-export const MAX_FILE_CHUNKS = 400;
+export const MAX_FILE_CHUNKS = 1600; // Permite vídeos ~24-30 MB (trozos base64 48KB)
 
 export function splitPhoto(id, nonceB64, cipherB64, chunkSize = PHOTO_CHUNK) {
   const total = Math.max(1, Math.ceil(cipherB64.length / chunkSize));

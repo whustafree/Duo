@@ -27,6 +27,7 @@ import {
   deliveryState,
   STATE_MARK,
 } from "../services/chatcodec";
+import GameInlinePanel from "../components/GameInlinePanel";
 
 // Chat cifrado de extremo a extremo: los mensajes salen cifrados de este
 // teléfono y viajan por un relay (broker público) que solo hace de cartero.
@@ -40,11 +41,59 @@ function timeOf(ts) {
   ).padStart(2, "0")}`;
 }
 
+// Fecha + hora legible para el detalle de entrega (doble toque).
+function stampOf(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const hoy = new Date();
+  const mismoDia =
+    d.getFullYear() === hoy.getFullYear() &&
+    d.getMonth() === hoy.getMonth() &&
+    d.getDate() === hoy.getDate();
+  const hora = timeOf(ts);
+  if (mismoDia) return `hoy a las ${hora}`;
+  return `${String(d.getDate()).padStart(2, "0")}/${String(
+    d.getMonth() + 1
+  ).padStart(2, "0")} a las ${hora}`;
+}
+
+// Texto del detalle de entrega de un mensaje propio.
+function deliveryDetail(item) {
+  if (!item || item.from !== "me") return "";
+  const st = deliveryState(item);
+  if (st === "read") return `Leído ${stampOf(item.readAt || item.ts)}`;
+  if (st === "delivered")
+    return `Entregado ${stampOf(item.deliveredAt || item.ts)}`;
+  if (st === "sent") return "Enviado (esperando a tu pareja)";
+  if (st === "failed") return "No se pudo enviar · toca Reintentar";
+  return "En cola · se enviará solo";
+}
+
 function MessageBubble({ item, partnerName, onLongPress, onRetry }) {
   const mine = item.from === "me";
   const [sound, setSound] = useState(null);
   const [playing, setPlaying] = useState(false);
   const [videoOpen, setVideoOpen] = useState(false);
+  const lastTapRef = useRef(0);
+
+  // Doble toque: muestra el estado real de entrega con su hora.
+  const handlePress = () => {
+    const now = Date.now();
+    if (now - lastTapRef.current < 320) {
+      lastTapRef.current = 0;
+      Alert.alert(
+        mine ? "Estado del mensaje" : "Mensaje recibido",
+        mine
+          ? deliveryDetail(item)
+          : `Recibido ${stampOf(item.ts)}${
+              item.read ? `\nLeído ${stampOf(item.readAt)}` : ""
+            }`,
+        [{ text: "Vale" }]
+      );
+      return;
+    }
+    lastTapRef.current = now;
+  };
 
   useEffect(
     () => () => {
@@ -87,6 +136,7 @@ function MessageBubble({ item, partnerName, onLongPress, onRetry }) {
     <View style={[styles.row, mine ? styles.rowMe : styles.rowOther]}>
       <Pressable
         style={[styles.bubble, mine ? styles.bubbleMe : styles.bubbleOther]}
+        onPress={handlePress}
         onLongPress={() => onLongPress && onLongPress(item)}
         delayLongPress={350}
       >
@@ -135,8 +185,18 @@ function MessageBubble({ item, partnerName, onLongPress, onRetry }) {
         <View style={styles.metaRow}>
           <Text style={[styles.time, mine ? styles.timeMe : styles.timeOther]}>
             {timeOf(item.ts)}
-            {mine ? STATE_MARK[state] : ""}
           </Text>
+          {mine ? (
+            <Text
+              style={[
+                styles.tick,
+                state === "read" && styles.tickRead,
+                mine && state !== "read" && styles.timeMe,
+              ]}
+            >
+              {STATE_MARK[state]}
+            </Text>
+          ) : null}
           {mine && state === "failed" ? (
             <Pressable onPress={() => onRetry && onRetry(item.id)} hitSlop={8}>
               <Text style={styles.retryText}>⭕ Reintentar</Text>
@@ -182,6 +242,8 @@ export default function ChatScreen() {
   const { session } = useSession();
   const {
     status,
+    partnerOnline,
+    partnerLastSeen,
     messages,
     typing,
     sendText,
@@ -191,7 +253,11 @@ export default function ChatScreen() {
     sendTyping,
     sendReaction,
     retryMessage,
+    gameSession,
+    startGame,
+    endGame,
   } = useP2P();
+  const [showGamesMenu, setShowGamesMenu] = useState(false);
 
   const [text, setText] = useState("");
   const [replyTo, setReplyTo] = useState(null);
@@ -411,17 +477,24 @@ export default function ChatScreen() {
         <Avatar
           emoji={partnerEmoji}
           color={session?.partnerAvatarColor || "#FF6B8B"}
-          online={status === "online"}
+          online={partnerOnline}
         />
         <View style={{ marginLeft: spacing.sm, flex: 1 }}>
           <Text style={styles.name}>{partnerName}</Text>
           <Text
             style={[
               styles.status,
-              status !== "online" && styles.statusOffline,
+              partnerOnline && styles.statusOnline,
+              !partnerOnline && styles.statusOffline,
             ]}
           >
-            {typing ? "escribiendo…" : STATUS_TEXT[status] || STATUS_TEXT.offline}
+            {typing
+              ? "escribiendo…"
+              : partnerOnline
+              ? "en línea"
+              : partnerLastSeen
+              ? `última vez ${stampOf(partnerLastSeen)}`
+              : STATUS_TEXT[status] || STATUS_TEXT.offline}
           </Text>
         </View>
         <Pressable
@@ -460,7 +533,7 @@ export default function ChatScreen() {
             <Text style={styles.empty}>
               Aún no hay mensajes. ¡Rompe el hielo! 💬
             </Text>
-            {status !== "online" ? (
+            {!partnerOnline ? (
               <Text style={styles.emptyHint}>
                 {status === "connecting"
                   ? "Buscando a tu pareja… se enviará todo en cuanto esté en línea."
@@ -475,6 +548,33 @@ export default function ChatScreen() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
       >
+        {gameSession && gameSession.gameId ? <GameInlinePanel onClose={() => endGame()} /> : null}
+        {showGamesMenu && !gameSession ? (
+          <View style={styles.menu}>
+            {[
+              { icon: "sparkles", label: "Verdad o Reto", id: "verdad" },
+              { icon: "sync-circle", label: "Ruleta de Retos", id: "ruleta" },
+              { icon: "dice", label: "Dados del Deseo", id: "dados" },
+              { icon: "chatbubbles", label: "Para Conocernos", id: "preguntas" },
+            ].map((o) => (
+              <Pressable
+                key={o.id}
+                style={styles.menuItem}
+                onPress={() => {
+                  setShowGamesMenu(false);
+                  try {
+                    startGame(o.id, 1);
+                  } catch (e) {
+                    Alert.alert("No se pudo iniciar el juego", e?.message || "");
+                  }
+                }}
+              >
+                <Ionicons name={o.icon} size={22} color={colors.primary} />
+                <Text style={styles.menuText}>{o.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
         {menuOpen ? (
           <View style={styles.menu}>
             {[
@@ -520,11 +620,27 @@ export default function ChatScreen() {
           <View style={styles.inputBar}>
             <Pressable
               style={styles.attachBtn}
-              onPress={() => setMenuOpen((v) => !v)}
+              onPress={() => {
+                setMenuOpen((v) => !v);
+                if (showGamesMenu) setShowGamesMenu(false);
+              }}
             >
               <Ionicons
                 name={menuOpen ? "close" : "add-circle"}
                 size={26}
+                color={colors.muted}
+              />
+            </Pressable>
+            <Pressable
+              style={styles.attachBtn}
+              onPress={() => {
+                setShowGamesMenu((v) => !v);
+                if (menuOpen) setMenuOpen(false);
+              }}
+            >
+              <Ionicons
+                name={showGamesMenu ? "game-controller" : "game-controller-outline"}
+                size={24}
                 color={colors.muted}
               />
             </Pressable>
@@ -622,6 +738,7 @@ const styles = StyleSheet.create({
   },
   name: { color: colors.text, fontSize: 17, fontWeight: "700" },
   status: { color: colors.success, fontSize: 12, marginTop: 1 },
+  statusOnline: { color: "#34D399", fontWeight: "700" },
   statusOffline: { color: colors.muted },
   iconBtn: { padding: spacing.sm },
   row: { marginBottom: spacing.sm, flexDirection: "row" },
@@ -640,6 +757,8 @@ const styles = StyleSheet.create({
   time: { fontSize: 10, marginTop: 4, alignSelf: "flex-end" },
   timeMe: { color: "#FFD9E0" },
   timeOther: { color: colors.muted },
+  tick: { fontSize: 10, marginTop: 4, marginLeft: 3, fontWeight: "800" },
+  tickRead: { color: "#34D399" },
   photo: {
     width: 200,
     height: 200,
