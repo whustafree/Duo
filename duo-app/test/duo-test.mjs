@@ -26,6 +26,8 @@ const RELAY = "relayproto";
 const VERSION = "version";
 const CHATCODEC = "chatcodec";
 const RETENTION = "retention";
+const MQTT = "mqttws";
+const PUSH = "pushproto";
 const TMP = {
   [CORE]: join(SVC, `.tmp-test-${CORE}.mjs`),
   [PROTO]: join(SVC, `.tmp-test-${PROTO}.mjs`),
@@ -33,6 +35,8 @@ const TMP = {
   [VERSION]: join(SVC, `.tmp-test-${VERSION}.mjs`),
   [CHATCODEC]: join(SVC, `.tmp-test-${CHATCODEC}.mjs`),
   [RETENTION]: join(SVC, `.tmp-test-${RETENTION}.mjs`),
+  [MQTT]: join(SVC, `.tmp-test-${MQTT}.mjs`),
+  [PUSH]: join(SVC, `.tmp-test-${PUSH}.mjs`),
 };
 
 let passed = 0;
@@ -59,6 +63,9 @@ function loadPureModules() {
   writeFileSync(TMP[VERSION], readFileSync(join(SVC, `${VERSION}.js`), "utf8"));
   writeFileSync(TMP[CHATCODEC], readFileSync(join(SVC, `${CHATCODEC}.js`), "utf8"));
   writeFileSync(TMP[RETENTION], readFileSync(join(SVC, `${RETENTION}.js`), "utf8"));
+  // mqttws.js y pushproto.js no importan nada: se copian tal cual.
+  writeFileSync(TMP[MQTT], readFileSync(join(SVC, `${MQTT}.js`), "utf8"));
+  writeFileSync(TMP[PUSH], readFileSync(join(SVC, `${PUSH}.js`), "utf8"));
 }
 
 function cleanup() {
@@ -133,6 +140,8 @@ async function main() {
     const V = await import(pathToFileURL(TMP[VERSION]).href);
     const CC = await import(pathToFileURL(TMP[CHATCODEC]).href);
     const RT = await import(pathToFileURL(TMP[RETENTION]).href);
+    const M = await import(pathToFileURL(TMP[MQTT]).href);
+    const PS = await import(pathToFileURL(TMP[PUSH]).href);
 
     console.log("\n1) Identidad y claves");
     const A = C.generateKeyPair();
@@ -857,6 +866,65 @@ async function main() {
       keep.length === 2 && gone.length === 1 && gone[0].id === "b",
       "filterExpired separa vivos y vencidos"
     );
+
+    console.log("\n13) Conexión blindada: clientId, presencia, QoS 1 y push");
+    // clientId ÚNICO por instalación: con el clientId compartido (bug de
+    // ≤0.7.x) el broker expulsaba a un teléfono cada vez que el otro se
+    // conectaba: bucle de patines y mensajes perdidos a mitad de camino.
+    ok(R.deviceClientId("a1b2c3d4e5f6a7b8") === "duo-a1b2c3d4e5f6a7b8", "clientId con prefijo duo-");
+    ok(R.deviceClientId("ZZ-a1.b2_c3!") === "duo-a1b2c3", "clientId saneado (solo hex)");
+    ok(
+      R.deviceClientId("a1b2c3d4e5f6a7b8") !== R.deviceClientId("ffffffffffffffff"),
+      "dos instalaciones -> dos clientIds distintos"
+    );
+    // Presencia: baliza retenida por teléfono (sabemos si toca push).
+    const coupleP = C.deriveCoupleId(A.publicKeyB64, B.publicKeyB64);
+    const presA = R.presenceTopic(coupleP, R.selfIdFor(A.publicKeyB64));
+    const presB = R.presenceTopic(coupleP, R.selfIdFor(B.publicKeyB64));
+    ok(presA.startsWith("duo/v2/pres/"), "tema de presencia bajo duo/v2/pres");
+    ok(presA !== presB, "cada teléfono tiene su propio tema de presencia");
+    ok(R.presenceTopic(coupleP, R.selfIdFor(A.publicKeyB64)) === presA, "tema de presencia determinista");
+    const balOn = R.parsePresence(R.buildPresence(true, 1000));
+    ok(balOn && balOn.on === 1 && balOn.ts === 1000, "baliza on/off con sello temporal");
+    ok(R.parsePresence(R.buildPresence(false, 2000)).on === 0, "baliza de apagado");
+    ok(
+      R.parsePresence("basura") === null && R.parsePresence('{"on":2,"ts":1}') === null,
+      "presencia malformada se descarta"
+    );
+    const nowP = 1000000;
+    ok(!R.isPresenceStale(nowP - 60000, nowP), "baliza reciente no está caducada");
+    ok(R.isPresenceStale(nowP - 180001, nowP), "baliza vieja se da por perdida");
+    ok(R.isPresenceStale(undefined, nowP), "sin baliza = sin presencia");
+    // MQTT QoS 1: publicar con acuse y detectar silencio del broker.
+    ok(M.buildPublishPacket("t/x", "hola", 1, 7)[0] === 0x32, "PUBLISH QoS 1 con flags correctos");
+    ok(M.buildPublishPacket("t/x", "hola", 0, 0)[0] === 0x30, "PUBLISH QoS 0 sigue igual");
+    ok(M.buildPublishPacket("t/x", "hola", 1, 7, true, true)[0] === 0x37, "flags DUP y RETAIN combinados");
+    ok(M.readPacketId([0x00, 0x07]) === 7, "readPacketId lee 2 bytes");
+    ok(M.readPacketId([0xff, 0xff]) === 65535 && M.readPacketId([]) === 0, "readPacketId: máximo y vacío");
+    ok(!M.shouldDropSilent(0, nowP, 45), "sin primer paquete no se corta");
+    ok(!M.shouldDropSilent(nowP - 59000, nowP, 45), "con tráfico reciente el socket vive");
+    ok(M.shouldDropSilent(nowP - 61000, nowP, 45), "60 s+ de silencio = socket muerto en silencio");
+    // Push "despertador": genérico SIEMPRE (privacidad) y bien gobernado.
+    const push = PS.buildWakePush("ExponentPushToken[abc]");
+    ok(push.to === "ExponentPushToken[abc]", "push dirigido al token de la pareja");
+    ok(push.channelId === "duo-mensajes" && push.priority === "high", "canal Duo con prioridad alta");
+    ok(push.body.includes("🔒") && push.title.startsWith("Duo"), "aviso genérico: Duo + candado");
+    ok(
+      !JSON.stringify({ body: push.body, title: push.title }).includes("Mensaje"),
+      "el aviso nunca arrastra el texto del mensaje"
+    );
+    ok(
+      PS.isValidPushToken("ExponentPushToken[x]") && !PS.isValidPushToken("pepe") && !PS.isValidPushToken(null),
+      "validación del token de push"
+    );
+    ok(!PS.shouldWakePush({ hasToken: false, online: false }), "sin token no se envía");
+    ok(!PS.shouldWakePush({ hasToken: true, online: true }), "con la pareja en línea no se envía");
+    ok(PS.shouldWakePush({ hasToken: true, online: false, lastSentAt: 0, now: 100000 }), "desconectada -> toca push");
+    ok(!PS.shouldWakePush({ hasToken: true, online: false, lastSentAt: 99000, now: 100000 }), "hueco mínimo entre avisos");
+    // El token de push viaja cifrado E2E como un mensaje más (chatcodec).
+    const tokDec = CC.decodeChat(CC.encodePushToken("ExponentPushToken[zzz]"));
+    ok(tokDec.type === "push-token" && tokDec.token === "ExponentPushToken[zzz]", "token de push ida y vuelta");
+    ok(CC.decodeChat("ExponentPushToken[zzz]").type === "text", "token crudo se ve como texto (compat)");
 
     console.log(`\nResultado: ${passed} ok, ${failed} fallos`);
     process.exit(failed ? 1 : 0);

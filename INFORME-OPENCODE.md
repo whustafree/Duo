@@ -113,6 +113,43 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
       aparecía); receptor con **topes** (`MAX_FILE_CHUNKS` e índices de trozo
       válidos); auto-destrucción que **borra también los archivos locales**
       caducados; tests **141 → 146**.
+- [x] **Conexión blindada** (v0.8.0, tras el reporte de que el P2P perdía la
+      conexión "a cada rato"): cuatro arreglos de raíz —
+      1) **clientId ÚNICO por teléfono** (`deviceClientId` + `duo.client.id`;
+      antes los dos usaban `clientId: pairId` y el broker, al interpretar
+      "toma de sesión", **expulsaba a un teléfono cada vez que el otro se
+      conectaba**, en bucle, perdiendo mensajes a mitad de camino);
+      2) **watchdog de latencia** en `mqttws.js` (`shouldDropSilent`): el ping
+      se enviaba pero **nunca se comprobaba la respuesta**, así que un socket
+      muerto en silencio (WiFi↔datos, NAT, ahorro de batería) quedaba "vivo"
+      para siempre y no se reconectaba; ahora se corta a los `keepAlive + 15` s
+      sin recibir nada;
+      3) **sesión persistente (`cleanSession=0`) + QoS 1** en suscripciones y
+      publicaciones del chat (con **PUBACK**, reenvío DUP y topes), de modo que
+      el broker **encola lo que llegue mientras estás desconectado** y lo
+      entrega al reconectar;
+      4) **conmutación de broker**: tras 3 caídas seguidas se tira el cliente y
+      se sondea la lista **rotando al siguiente** en lugar de quedarse pegado a
+      uno malo. Además: **presencia** (baliza retenida por teléfono cada 90 s,
+      caduca a los 3 min) y reconexión inmediata al volver a primer plano.
+- [x] **Relay propio gratis + brokers público de respaldo** (v0.8.0): la lista
+      `BROKERS` de `relay.js` pone primero el **deployment EMQX Serverless
+      (gratis: 1 M minutos de sesión + 1 GB/mes; `relayconfig.js`)** y después
+      los brokers públicos de `mqttws.js` como red de seguridad. Solo hay que
+      pegar el endpoint y las credenciales en `relayconfig.js` cuando el
+      usuario cree el deployment.
+- [x] **Avisos "como WhatsApp" con la app cerrada** (v0.8.0): si al enviar un
+      mensaje la pareja está **desconectada** (presencia), además de publicar
+      en el relay se le manda un **push genérico** («Tienes un mensaje nuevo
+      🔒», sin contenido) vía **Expo Push Service** —gratis y sin límite de
+      mensajes— que **despierta su app**; esta reconecta, recibe lo encolado
+      (QoS 1) y muestra el aviso local con el contenido ya descifrado. Los
+      **tokens se intercambian cifrados E2E** por el propio relay (trama
+      `push-token` en `chatcodec.js`) y el emisor **no envía el push** si la
+      pareja está en línea o no tiene token (compatibilidad con versiones
+      antiguas). Respaldo sin FCM: **tarea de segundo plano cada ~15 min**
+      (`react-native-background-fetch`, aprobada) que reconecta y barre
+      pendientes. El push **nunca lleva contenido**: solo metadatos.
 - [x] **Estados de entrega en el chat** (v0.7.0): ⏳ en cola, ✓ enviado al
       relay, ✓✓ confirmado por la pareja y ⭕ con **reintento manual**
       (`retryMessage`); la bandeja reintenta sola cada 12 s. Burbuja con la
@@ -145,7 +182,7 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
 - [x] Cifrado E2E: X25519 + HKDF-SHA256 + AES-256-GCM, módulos `@noble/*`.
 - [x] Polyfill `crypto.getRandomValues` con RNG nativo (`expo-crypto`), cargado
       **antes** que cualquier otro módulo (`index.js`).
-- [x] Pruebas: `duo-app/test/duo-test.mjs` → **`npm test`**, **146
+- [x] Pruebas: `duo-app/test/duo-test.mjs` → **`npm test`**, **177
       verificaciones, 0 fallos** (identidad/SAS, encuadre, auth E2E, QR v2,
       temas/sobre del relay, mensajes, fotos, **cifrado del estado del juego**
       —un tercero no lo descifra y el reto no viaja en claro; la pareja recibe el
@@ -154,10 +191,12 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
       **comparación de versiones**, **contenido ≥ 20 por nivel y por
       juego**, **bloqueo y cofre** (sal/resumen del PIN, clave derivada, cofre
       ilegible con clave equivocada), **chat estructurado** (citas, reacciones,
-      compatibilidad con texto plano), **auto-destrucción** (plazos y filtrado) y
+      compatibilidad con texto plano), **auto-destrucción** (plazos y filtrado),
+      **conexión blindada** (clientId único, presencia, QoS 1, watchdog de
+      silencio) y **push despertador** (aviso genérico sin contenido), y
       una sesión completa sobre un "bus" en memoria que imita al broker). Además
       sigue habiendo una prueba real contra el broker MQTT (fuera de la suite).
-- [x] Bundle de Metro `expo export` verde (`--platform android`; Hermes, 4.23 MB).
+- [x] Bundle de Metro `expo export` verde (`--platform android`; Hermes, 4.25 MB).
 - [x] APK por GitHub Actions en cada push a `main` que toque `duo-app/**`
       (`npm ci` → `npm test` → `expo prebuild` → `gradlew assembleRelease`).
 - [x] Releases publicados: **v0.1.2** (versión con servidor), **v0.2.0**
@@ -166,9 +205,20 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
       versionCode 4), **v0.5.0** (juegos compartidos + borrado + invitación +
       nivel Íntimo; app 0.5.0 / versionCode 5), **v0.6.0** (respuestas en juegos
       + audio/vídeo/cámara en el chat + contenido ampliado + aviso de
-      actualizaciones; app 0.6.0 / versionCode 6) y **v0.7.0** (estados ✓/✓✓,
+      actualizaciones; app 0.6.0 / versionCode 6), **v0.7.0** (estados ✓/✓✓,
       citas y reacciones, bloqueo PIN/huella, cifrado local, avisos ocultos,
-      pantalla discreta y auto-destrucción; app 0.7.0 / versionCode 7).
+      pantalla discreta y auto-destrucción; app 0.7.0 / versionCode 7),
+      **v0.7.1** (estabilidad del envío de archivos: tope de 6 MB, envío
+      paginado y guardia de envío en curso; app 0.7.1 / versionCode 8) y
+      **v0.8.0** (conexión blindada + relay propio + push tipo WhatsApp;
+      app 0.8.0 / versionCode 9).
+
+- [x] **v0.8.0** — **conexión fiable + avisos como WhatsApp** (21/10/2026): app
+      `0.8.0` / versionCode `9`; clientId único por teléfono, watchdog de
+      latencia, sesión persistente + QoS 1, conmutación de broker, presencia,
+      relay propio EMQX Serverless (configurable) con públicos de respaldo,
+      push despertador genérico por Expo Push + respaldo de segundo plano;
+      tests **177/0**; bundle Hermes Android 4.25 MB. **Publicada.**
 
 > Nota (20/10/2026): durante la sesión de v0.7.0 la carpeta `DuoProyecto`
 > desapareció del escritorio con los cambios **sin commitear**; se **reclonó
@@ -194,9 +244,18 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
 - [ ] Probar en **dos teléfonos** **citas, reacciones y estados ✓/✓✓/⭕**
       (incluida compatibilidad: una versión antigua debe ver el JSON como texto
       normal).
-- [ ] v0.8.0: **llamadas WebRTC** (`react-native-webrtc` ya aprobado) con
+- [ ] Probar en **dos teléfonos** la **v0.8.0**: (a) la conexión ya no se cae "a
+      cada rato" y los ✓/✓✓ son estables; (b) con la app **minimizada o
+      cerrada**, al recibir un mensaje llega el **aviso genérico** y al abrirlo
+      aparece el mensaje descifrado; (c) el mensaje enviado con la pareja
+      desconectada llega al reconectar (encolado por QoS 1).
+- [ ] Crear el **deployment EMQX Serverless** y pegar endpoint + credenciales en
+      `duo-app/src/services/relayconfig.js` (relay propio como canal principal).
+- [ ] Configurar **Firebase** (`google-services.json`) y el proyecto de **Expo**
+      para que el push funcione en el APK de release.
+- [ ] v0.9.0: **llamadas WebRTC** (`react-native-webrtc` ya aprobado) con
       señalización por el mismo relay MQTT y STUN público.
-- [ ] v0.9.0: **juegos y medios** (galería compartida, cuenta atrás
+- [ ] v0.10.0: **juegos y medios** (galería compartida, cuenta atrás
       sincronizada, progresión, selección múltiple de fotos, juegos nuevos).
 - [ ] Más juegos/retos; publicar en Play Store.
 
@@ -214,9 +273,12 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
 | `duo-app/src/data/pool-*.js` | Contenido de los juegos: `pool-retos.js`, `pool-truths.js`, `pool-dares.js`, `pool-dados.js` y `pool-preguntas.js`, cada uno con **22 opciones únicas por nivel × 5 niveles = 110 ítems** (los tests exigen ≥ 20 por nivel y por juego). `mock.js` los reexporta. |
 | `duo-app/src/services/cryptocore.js` | Núcleo criptográfico **puro** (sin React Native): claves, cifrado, `deriveCoupleId`, código SAS, emoji por clave, secreto del QR. Testeable en Node. |
 | `duo-app/src/services/protocol.js` | **Puro**: encuadre de tramas (prefijo de 4 bytes + JSON, máx. 8 MB), `auth`/`pair-req`/`pair-ok`/`msg`/`ack`/`ping`/`typing`/**`game`** (con `reply` dentro para el hilo de respuestas)/**`file-meta`**/**`file-chunk`**, troceo de archivos (48000 chars). `buildGame`/`readGame` cifran el estado del juego igual que el chat. |
-| `duo-app/src/services/mqttws.js` | Cliente **MQTT 3.1.1 sobre WebSocket** mínimo y **sin dependencias** (no usa `Buffer`/`process`/`TextEncoder`). Publica/suscribe con QoS 0, ping keepalive y reconexión con backoff. `MQTT_BROKERS` con los 3 brokers. |
-| `duo-app/src/services/relayproto.js` | Lógica **pura** del relay: temas (`duo/v2/pair/<hash>`, `duo/v2/chat/<hash>`), QR v2 (`duo:pair:v2:<pub>:<ps>`) y sobre `{s, f}`. |
-| `duo-app/src/services/relay.js` | Transporte `Relay` por el broker público. **Misma API** que el antiguo P2P (`onEvent`/`configure`/`start`/`stop`/`wake`/`send`/`startPairing`/`joinPairing`/`acceptPairing`/`rejectPairing`/`cancelPairing`; eventos `status`/`session`/`frame`/`pair-request`/`paired`). Elige broker probando los 3 en orden. |
+| `duo-app/src/services/mqttws.js` | Cliente **MQTT 3.1.1 sobre WebSocket** mínimo y **sin dependencias** (no usa `Buffer`/`process`/`TextEncoder`). **v0.8.0**: **QoS 1** en publicaciones/suscripciones (con **PUBACK**, reenvío `DUP` hasta 3 intentos y acuse de los entrantes), **sesión persistente** (`cleanSession=0`), **retain** y **auth** usuario/contraseña, y **watchdog de silencio** (`shouldDropSilent`: el ping ya no basta, se exige recibir algo en `keepAlive + 15` s o el socket se corta). Exporta utilidades puras (`buildPublishPacket`, `readPacketId`, `shouldDropSilent`) probadas en Node. `MQTT_BROKERS` con los 3 brokers públicos de respaldo. |
+| `duo-app/src/services/relayproto.js` | Lógica **pura** del relay: temas (`duo/v2/pair/<hash>`, `duo/v2/chat/<hash>`, **`duo/v2/pres/<hash>`** de presencia), QR v2 (`duo:pair:v2:<pub>:<ps>`), sobre `{s, f}`, **baliza de presencia** (`buildPresence`/`parsePresence`/`isPresenceStale`, caduca a los 3 min) y **`deviceClientId`** (clientId **único por instalación**). |
+| `duo-app/src/services/relayconfig.js` | (v0.8.0) `PRIVATE_BROKERS`: endpoint + credenciales del **relay propio EMQX Serverless** (gratis). Vacío por defecto → se usan los públicos de respaldo. |
+| `duo-app/src/services/relay.js` | Transporte `Relay` (broker propio primero, públicos de respaldo). **Misma API** que el antiguo P2P (`onEvent`/`configure`/`start`/`stop`/`wake`/`send`/`startPairing`/`joinPairing`/`acceptPairing`/`rejectPairing`/`cancelPairing`; eventos `status`/`session`/`frame`/`pair-request`/`paired`/**`presence`**). **v0.8.0**: **clientId único por teléfono** (sin expulsiones mutuas), sondeo de brokers con **conmutación** tras 3 caídas seguidas, **envíos QoS 1**, **presencia** (baliza retenida cada 90 s) y reconexión inmediata al volver a primer plano. |
+| `duo-app/src/services/pushproto.js` | (v0.8.0) **Puro**: cuerpo del push genérico (`buildWakePush`: «Tienes un mensaje nuevo 🔒», canal `duo-mensajes`, TTL 1 h), validación del token (`isValidPushToken`) y decisión de envío (`shouldWakePush`, hueco mínimo 45 s). |
+| `duo-app/src/services/push.js` | (v0.8.0) `registerForPush()` (token de Expo Push de este teléfono; `null` si no hay proyecto configurado) y `sendWakePush()` (POST a `exp.host`). |
 | `duo-app/src/services/crypto.js` | Wrapper de almacenamiento: guarda/carga el par de claves en AsyncStorage y re-exporta `cryptocore`. |
 | `duo-app/src/services/version.js` | Lee la versión instalada (`app.json`) y compara versiones (semver). |
 | `duo-app/src/services/updatecheck.js` | Comprueba el `latest` de GitHub Releases contra la versión instalada y propone el aviso `UpdateModal` (cooldown 6 h, sin insistir con una versión ya descartada; botón que abre la descarga). |
@@ -224,7 +286,7 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
 | `duo-app/src/services/retention.js` | **Puro** (v0.7.0): auto-destrucción local — `TTL_OPTIONS` (Nunca/7/30/90), `parseTtlDays`, `isExpired`, `filterExpired`. |
 | `duo-app/src/services/applock.js` | (v0.7.0) Bloqueo: `loadLockState`, `setupPin` (resumen con sal), `unlockWithPin`/`unlockWithBio`, huella (`setBioEnabled`/`enableBioOnly`), avisos ocultos, pantalla discreta, `onLockStateChange`. Con cifrado activo entrega la clave al cofre al desbloquear. |
 | `duo-app/src/services/localvault.js` | (v0.7.0) Cofre de la copia local: `vaultGet`/`vaultSet`/`vaultRemove` cifrados con AES-GCM cuando hay clave; espera con `vaultReady()` y no escribe en claro si el modo aún no se conoce; `vaultIsReady()` para el gate de ACKs; `onVaultChange` para reescribir al cambiar de modo. |
-| `duo-app/src/context/P2PContext.js` | Capa React: historial local (`duo.msgs.<coupleId>`), bandeja de salida, envío/recepción de **archivos** (fotos, audio y vídeo por `file-meta`/`file-chunk`, ensamblados con `PhotoAssembler`), acks/dedup, typing, notificaciones en 2.º plano, API de pareo, **estado del juego compartido** (`gameSession`, `startGame`, `setGameLevel`, `drawGame`, **`sendGameReply`** (hilo `GameThread`), `endGame`, `incomingGame`, `clearIncomingGame`; baliza cada 6 s **que incluye el hilo de respuestas**) y **borrado** (`clearHistory`, `deleteStoredPhotos`, `wipeAllContent`). Reintento periódico cada 12 s (`flushOutbox` en `flushRef`). **v0.7.0**: historial por el **cofre** (`vaultGet`/`vaultSet`), **estados ✓/✓✓/⭕** (`markSent`/`markFailed`/`retryMessage`), **`sendReaction`** y citas (`sendText(text, replyTo)` con `decodeChat` al recibir), **ACK suprimido con el cofre cerrado**, avisos ocultos y **limpieza por retención** cada minuto. **v0.7.1**: **tope de 6 MB por archivo** (aviso sin leer en memoria), envío **paginado con `iterFileFrames`** y guardia **`sendingRef`** (sin dobles envíos), borrado de archivos caducados. |
+| `duo-app/src/context/P2PContext.js` | Capa React: historial local (`duo.msgs.<coupleId>`), bandeja de salida, envío/recepción de **archivos** (fotos, audio y vídeo por `file-meta`/`file-chunk`, ensamblados con `PhotoAssembler`), acks/dedup, typing, notificaciones en 2.º plano, API de pareo, **estado del juego compartido** (`gameSession`, `startGame`, `setGameLevel`, `drawGame`, **`sendGameReply`** (hilo `GameThread`), `endGame`, `incomingGame`, `clearIncomingGame`; baliza cada 6 s **que incluye el hilo de respuestas**) y **borrado** (`clearHistory`, `deleteStoredPhotos`, `wipeAllContent`). Reintento periódico cada 12 s (`flushOutbox` en `flushRef`). **v0.7.0**: historial por el **cofre** (`vaultGet`/`vaultSet`), **estados ✓/✓✓/⭕** (`markSent`/`markFailed`/`retryMessage`), **`sendReaction`** y citas (`sendText(text, replyTo)` con `decodeChat` al recibir), **ACK suprimido con el cofre cerrado**, avisos ocultos y **limpieza por retención** cada minuto. **v0.7.1**: **tope de 6 MB por archivo** (aviso sin leer en memoria), envío **paginado con `iterFileFrames`** y guardia **`sendingRef`** (sin dobles envíos), borrado de archivos caducados. **v0.8.0**: **clientId único** persistido (`duo.client.id`), **estado de presencia** de la pareja, **push despertador** (`announcePushToken` —token propio cifrado E2E—, `storePartnerPushToken` y `maybeWakePush` al enviar con la pareja desconectada) y **`BackgroundFetch` cada ~15 min** que reconecta y barre pendientes. |
 | `duo-app/src/context/E2EContext.js` | Expone las claves del dispositivo; `peerPub` = `session.partnerPub`. |
 | `duo-app/src/screens/OnboardingScreen.js` | Un solo flujo de vínculo: `welcome` (crear / escanear / pegar + **«📲 Enviar el enlace de descarga a mi pareja»**), `create` (QR de 240 px + «📤 Compartir el código» vía `Share`), `paste`, `scan` y `joining` (spinner + SAS). |
 | `duo-app/src/screens/ChatScreen.js` | Chat sobre `useP2P()` (sin api/socket). Texto, fotos (galería o cámara), notas de voz y vídeos cortos; fotos con `expo-image-manipulator` (1280 px, JPEG 0.7) antes de cifrar. Audio/vídeo van por `file-meta`/`file-chunk` y se reproducen en burbujas (audio play/pausa, vídeo con visor a pantalla completa). El botón del candado explica el cifrado. **v0.7.0**: marcas ⏳/⭕/✓/✓✓ (con reintento manual), **hoja de reacciones y responder** al mantener pulsado, barra de cita y vista previa del citado. |
@@ -232,7 +294,7 @@ datos móviles, NAT estricto incluido), sin estar juntos ni abrir puertos.
 | `duo-app/src/components/LockScreen.js` | (v0.7.0) Pad numérico PIN (4-6 dígitos): `mode="unlock"` (con huella si no hay PIN; «¿Olvidaste el PIN?» borra la copia local) y `mode="create"` (introduce + confirma) para el Perfil. |
 | `duo-app/src/components/StealthScreen.js` | (v0.7.0) Vista falsa de «Notas» que tapa la app al ir a segundo plano (pantalla discreta). |
 | `duo-app/src/screens/ProfileScreen.js` | Perfil con **datos reales** (nº de mensajes/fotos), invitación + enlace de descarga y **borrado** (historial, fotos, todo) + desvincular, todo con confirmación. **v0.7.0**: sección «Privacidad de la app» (PIN/huella/avisos ocultos/pantalla discreta/auto-destrucción), modal de creación de PIN (`LockScreen mode="create"`) y código de verificación con «✓ Comprobado». |
-| `duo-app/test/duo-test.mjs` | Pruebas (**146 verificaciones, 0 fallos**): copia `cryptocore.js`/`protocol.js`/`relayproto.js`/`version.js`/`chatcodec.js`/`retention.js` a temporales `.mjs` y los importa en Node; incluye cifrado del estado del juego, respuestas de juego cifradas, troceado de audio/vídeo (`file-*`) con generador `iterFileFrames` y topes del ensamblador, comparación de versiones, contenido ≥ 20 por nivel y por juego, **bloqueo/cofre, chat estructurado y auto-destrucción**, y una sesión completa sobre un "bus" en memoria que imita al broker. |
+| `duo-app/test/duo-test.mjs` | Pruebas (**177 verificaciones, 0 fallos**): copia `cryptocore.js`/`protocol.js`/`relayproto.js`/`version.js`/`chatcodec.js`/`retention.js`/**`mqttws.js`**/**`pushproto.js`** a temporales `.mjs` y los importa en Node; incluye cifrado del estado del juego, respuestas de juego cifradas, troceado de audio/vídeo (`file-*`) con generador `iterFileFrames` y topes del ensamblador, comparación de versiones, contenido ≥ 20 por nivel y por juego, **bloqueo/cofre, chat estructurado y auto-destrucción**, **conexión blindada (clientId único, presencia, QoS 1, watchdog de silencio)** y **push despertador (aviso genérico sin contenido)**, y una sesión completa sobre un "bus" en memoria que imita al broker. |
 
 ### Flujo de vínculo (QR / código)
 
@@ -336,7 +398,7 @@ Payload:         { k: "start"|"level"|"draw"|"reply"|"sync"|"end", gameId, level
 ```bash
 cd duo-app
 npm install
-npm test              # 146 verificaciones (protocolo + relay + cifrado E2E + juego + archivos + versiones + bloqueo + chat estructurado + auto-destrucción)
+npm test              # 177 verificaciones (protocolo + relay + cifrado E2E + juego + archivos + versiones + bloqueo + chat estructurado + auto-destrucción + conexión + push)
 npx expo start
 ```
 
@@ -446,7 +508,7 @@ npx eas build -p android --profile preview
 
 ```bash
 cd C:\Users\whustaf\Desktop\DuoProyecto\duo-app
-npm test                          # protocolo + relay (146 ok)
+npm test                          # protocolo + relay (177 ok)
 npx expo export --platform android --output-dir dist   # bundle Metro
 ```
 
@@ -499,5 +561,17 @@ node -e "const b=require('@babel/core'),fs=require('fs'),p=require('path');const
     metas/trozos fuera de rango y auto-destrucción que **borra también los
     archivos locales**; tests **146 verificaciones, 0 fallos** (bundle Hermes
     Android 4.23 MB; app `0.7.1`, versionCode `8`). **Publicada.**
+  - `v0.8.0` — **conexión fiable + avisos como WhatsApp** (21/10/2026):
+    **clientId único por teléfono** (antes el broker expulsaba a un teléfono
+    cada vez que el otro se conectaba), **watchdog de latencia** en `mqttws.js`
+    (corta el socket si el broker calla más de `keepAlive + 15` s),
+    **sesión persistente + QoS 1** (el broker encola lo perdido y lo entrega al
+    reconectar), **conmutación de broker** tras 3 caídas, **presencia** por
+    baliza retenida cada 90 s, **relay propio EMQX Serverless** (gratis,
+    `relayconfig.js`) con los públicos de respaldo, y **push despertador
+    genérico** (Expo Push, gratis) que avisa con la app minimizada/cerrada +
+    **respaldo de segundo plano** cada ~15 min (`react-native-background-fetch`,
+    aprobada); tests **177 verificaciones, 0 fallos** (bundle Hermes Android
+    4.25 MB; app `0.8.0`, versionCode `9`). **Publicada.**
 - Tras cambiar dependencias: commit + push y la CI (Actions → Build APK)
   compila y sube el artefacto; descargarlo y publicarlo en el Release.

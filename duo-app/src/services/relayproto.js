@@ -38,6 +38,45 @@ export function selfIdFor(pubB64) {
   return hashTag("self", String(pubB64));
 }
 
+// Tema de presencia de UN dispositivo concreto de la pareja (uno por
+// teléfono). El broker lo conserva "retenido": al suscribirnos recibimos
+// siempre el último estado, aunque lleguemos tarde.
+export function presenceTopic(coupleId, whoSelfId) {
+  return `${TOPIC_ROOT}/pres/${hashTag("pres", `${coupleId}|${whoSelfId}`)}`;
+}
+
+// Baliza de presencia: si hace más de PRESENCE_STALE_MS que no se renueva,
+// damos por perdido al dispositivo (red caída, móvil apagado…).
+export const PRESENCE_STALE_MS = 180000; // 3 minutos
+
+export function buildPresence(on, ts = Date.now()) {
+  return JSON.stringify({ on: on ? 1 : 0, ts });
+}
+
+export function parsePresence(text) {
+  try {
+    const o = JSON.parse(String(text || ""));
+    if (o && (o.on === 0 || o.on === 1) && typeof o.ts === "number") return o;
+  } catch {}
+  return null;
+}
+
+export function isPresenceStale(ts, now = Date.now(), maxAge = PRESENCE_STALE_MS) {
+  return typeof ts !== "number" || now - ts > maxAge;
+}
+
+// clientId MQTT ÚNICO por instalación (se guarda una sola vez y no cambia).
+// ¡NUNCA el mismo en dos teléfonos!: MQTT interpreta un clientId repetido
+// como "toma de sesión" y el broker EXPULSA al otro teléfono, que se
+// reconecta y expulsa al primero… un bucle de patines que perdía mensajes
+// a mitad de camino (era la causa de las pérdidas "a cada rato").
+export function deviceClientId(suffix) {
+  const s = String(suffix || "")
+    .replace(/[^0-9a-f]/gi, "")
+    .slice(0, 24);
+  return `duo-${s || "anon"}`;
+}
+
 // QR de vinculación: corto y fácil de escanear (no lleva SDP ni direcciones).
 //   duo:pair:v2:<pub b64url>:<ps b64url>
 export function buildPairQr(pubB64, psB64url) {

@@ -34,13 +34,32 @@ export function encodeReaction(targetId, emoji) {
   });
 }
 
-// Devuelve { type: "text" | "reaction", text, replyTo?, target?, emoji? }
+// Token de push de ESTE teléfono (Expo Push). Viaja cifrado de extremo a
+// extremo como cualquier mensaje, pero es señalización interna: la pareja lo
+// guarda sin crear burbuja ni aviso (sirve para "despertar" la app cuando
+// este teléfono está desconectado).
+export function encodePushToken(token) {
+  return JSON.stringify({
+    [MARK]: V,
+    type: "push-token",
+    token: String(token || "").slice(0, 200),
+  });
+}
+
+// Devuelve { type: "text" | "reaction" | "push-token", ... }
 export function decodeChat(raw) {
   const fallback = { type: "text", text: String(raw ?? ""), replyTo: null };
   if (typeof raw !== "string" || !raw.startsWith("{")) return fallback;
   try {
     const obj = JSON.parse(raw);
     if (!obj || obj[MARK] !== V) return fallback;
+    if (obj.type === "push-token" && obj.token) {
+      return {
+        type: "push-token",
+        text: "",
+        token: String(obj.token).slice(0, 200),
+      };
+    }
     if (obj.type === "reaction" && obj.target) {
       return {
         type: "reaction",

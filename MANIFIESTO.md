@@ -81,7 +81,7 @@ duo-app/
 ├── babel.config.js
 ├── package.json            # incluye "npm test" → pruebas del protocolo (relay)
 ├── test/
-│   └── duo-test.mjs        # 146 verificaciones, 0 fallos (relay + cifrado E2E + juego + archivos + versiones + bloqueo/cofre + chat estructurado + auto-destrucción + bus en memoria)
+│   └── duo-test.mjs        # 177 verificaciones, 0 fallos (relay + cifrado E2E + juego + archivos + versiones + bloqueo/cofre + chat estructurado + auto-destrucción + bus en memoria + clientId/presencia/QoS 1/push)
 └── src/
     ├── theme.js            # Colores, espaciados, tipografía
     ├── config.js           # Enlaces públicos (repo, releases, descarga) e invitación
@@ -210,7 +210,7 @@ duo-app/
 ```bash
 cd duo-app
 npm install
-npm test           # pruebas del protocolo y del relay (146 verificaciones)
+npm test           # pruebas del protocolo y del relay (177 verificaciones)
 npx expo start     # escanea el QR con Expo Go
 ```
 
@@ -237,19 +237,22 @@ cd duo-app && eas build -p android --profile preview
 
 ## 5. Estado actual (qué ya está hecho)
 
-Versión actual: **0.7.1** (versionCode 8). Los juegos son **compartidos** y van
+Versión actual: **0.8.0** (versionCode 9). Los juegos son **compartidos** y van
 cifrados (con respuestas dentro de los juegos), el chat admite audio, vídeo y
 fotos de cámara, estados ✓/✓✓, citas y reacciones; hay avisos reales con la app
 cerrada, bloqueo con PIN/huella, privacidad configurable, aviso de
 actualizaciones, borrado de contenido y enlace de invitación; el envío de
-archivos tiene **tope duro de 6 MB y ritmo pausado** (no congela la interfaz).
-Las Releases **v0.5.0**, **v0.6.0**, **v0.7.0** y **v0.7.1** ya están
-publicadas.
+archivos tiene **tope duro de 6 MB y ritmo pausado** (no congela la interfaz);
+y desde v0.8.0 la conexión está **blindada** (clientId único, watchdog de
+latencia, sesión persistente + QoS 1, conmutación de broker) con **push
+"despertador" genérico** para recibir avisos aunque la app esté minimizada.
+Las Releases **v0.5.0** a **v0.8.0** ya están publicadas.
 
 - [x] Maqueta completa de UI (todas las pantallas).
 - [x] **Sin servidor propio ni de pago**: chat/fotos/vinculación a través de un
-      **broker MQTT público gratuito** que solo hace de cartero; el contenido va
-      cifrado E2E.
+      **broker MQTT** que solo hace de cartero — primero el relay propio
+      (EMQX Serverless gratis, `relayconfig.js`) y de respaldo los **brokers
+      MQTT públicos gratuitos**; el contenido va cifrado E2E.
 - [x] Vinculación por **QR o código pegado** (5 campos, `duo:pair:v2:…`) +
       confirmación con **código SAS de 6 dígitos**. No hace falta estar en la
       misma WiFi.
@@ -332,11 +335,28 @@ publicadas.
       nunca aparecía); el receptor **ignora metas con trozos absurdos e índices
       fuera de rango**; y la auto-destrucción **borra también los archivos
       locales** caducados.
+- [x] **Conexión blindada (v0.8.0, tras el reporte de pérdidas "a cada rato")**:
+      **clientId ÚNICO por teléfono** (antes los dos usaban el mismo y el broker
+      se expulsaba mutuamente en bucle: causa raíz de mensajes perdidos),
+      **watchdog de latencia** (si el broker calla más de `keepAlive + 15` s el
+      socket se cierra y se reconecta en lugar de fingir que sigue vivo),
+      **sesión persistente + QoS 1** (el broker encola lo que llegue mientras
+      estás desconectado y lo entrega al reconectar, con reenvío y acuse),
+      **conmutación de broker** tras 3 caídas seguidas, **presencia** por
+      baliza retenida cada 90 s y **aviso al volver a primer plano**.
+- [x] **Avisos "como WhatsApp" (v0.8.0)**: si la pareja está desconectada, el
+      emisor le manda un **push genérico** («Tienes un mensaje nuevo 🔒») vía
+      **Expo Push Service** (gratis, sin límite de mensajes) que **despierta su
+      app**: reconecta, recibe lo encolado y muestra el aviso local. El push
+      **nunca lleva el contenido** (privacidad) y los tokens se intercambian
+      **cifrados E2E** por el propio relay. Respaldo: **tarea de segundo plano
+      cada ~15 min** (`react-native-background-fetch`) que reconecta y barre si
+      FCM no llegó.
 - [x] Persistencia de sesión + **historial local cifrado en origen** (AsyncStorage).
 - [x] Notificaciones locales.
 - [x] Cifrado E2E **completo** de textos, fotos, audio/vídeo y estado del juego (X25519 + AES-256-GCM).
 - [x] Polyfill de `crypto.getRandomValues` con RNG nativo (expo-crypto).
-- [x] Tests del protocolo (`duo-app/test/duo-test.mjs`, **146 verificaciones, 0
+- [x] Tests del protocolo (`duo-app/test/duo-test.mjs`, **177 verificaciones, 0
       fallos**): identidad/SAS, encuadre, auth E2E, QR v2, temas/sobre del relay,
       mensajes, fotos, **cifrado del estado del juego** (un tercero no lo
       descifra y el reto no viaja en claro; la pareja recibe el juego iniciado),
@@ -346,8 +366,10 @@ publicadas.
       ignoran), **comparación de versiones**, **contenido ≥ 20 por nivel y por
       juego**, **bloqueo y cofre** (sal/resumen del PIN, clave derivada, cofre
       ilegible con clave equivocada), **chat estructurado** (citas, reacciones y
-      compatibilidad con texto plano) y **auto-destrucción** (plazos y
-      filtrado), más una sesión completa sobre un "bus" en memoria que imita al
+      compatibilidad con texto plano), **auto-destrucción** (plazos y
+      filtrado), **conexión blindada** (clientId único, presencia, QoS 1 y
+      watchdog de silencio) y **push despertador** (aviso genérico sin
+      contenido), más una sesión completa sobre un "bus" en memoria que imita al
       broker.
 - [x] Repo en GitHub: https://github.com/whustafree/Duo
 - [x] Build automático de APK con GitHub Actions (`.github/workflows/build-apk.yml`).
@@ -377,8 +399,17 @@ publicadas.
       y los **estados ✓/✓✓/⭕** con la pareja abriendo y cerrando la app.
 - [ ] Probar la **compatibilidad**: con una versión antigua instalada, el texto
       de las citas/reacciones debe verse como mensaje normal.
+- [ ] Probar en **dos teléfonos** los **avisos tipo WhatsApp** (v0.8.0): con la
+      app minimizada o cerrada, mandar un mensaje y comprobar que llega el aviso
+      genérico y, al abrirlo, el mensaje descifrado; y que la conexión ya no se
+      cae "a cada rato" (estados ✓/✓✓ estables, sin mensajes perdidos).
+- [ ] Crear el **deployment EMQX Serverless** (gratis) y pegar el endpoint y las
+      credenciales en `duo-app/src/services/relayconfig.js` para usar el relay
+      propio como canal principal.
+- [ ] Configurar **Firebase** (`google-services.json`) y el proyecto de **Expo**
+      para que el push funcione en el APK de release.
 - [ ] Más juegos y retos; editar/crear retos propios.
-- [ ] Notificaciones push reales (hoy solo locales).
+- [ ] Llamadas de voz/vídeo WebRTC (v0.9.0 prevista).
 - [ ] Publicar en Play Store (firma de release + AAB).
 
 ---

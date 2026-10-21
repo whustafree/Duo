@@ -123,7 +123,7 @@ No hace falta estar en la misma red; uno crea el vínculo y el otro se une.
 
 ```bash
 npm install
-npm test           # 146 verificaciones (protocolo, relay, bloqueo, chat, juego, versiones; corren en Node)
+npm test           # 177 verificaciones (protocolo, relay, bloqueo, chat, juego, versiones, conexión y push; corren en Node)
 npx expo start     # desarrollo
 ```
 

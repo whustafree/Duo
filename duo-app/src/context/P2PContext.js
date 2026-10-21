@@ -9,7 +9,11 @@ import {
 import { AppState, Alert } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
+import BackgroundFetch from "react-native-background-fetch";
 import { Relay } from "../services/relay";
+import { deviceClientId } from "../services/relayproto";
+import { registerForPush, sendWakePush } from "../services/push";
+import { shouldWakePush } from "../services/pushproto";
 import { useSession } from "./SessionContext";
 import { useE2E } from "./E2EContext";
 import {
@@ -34,7 +38,12 @@ import {
   requestNotificationPermission,
   notifyNewMessage,
 } from "../services/notifications";
-import { decodeChat, encodeText, encodeReaction } from "../services/chatcodec";
+import {
+  decodeChat,
+  encodeText,
+  encodeReaction,
+  encodePushToken,
+} from "../services/chatcodec";
 import { filterExpired, parseTtlDays } from "../services/retention";
 import { shouldHideContent } from "../services/applock";
 import {
@@ -47,14 +56,20 @@ import {
 } from "../services/localvault";
 
 // Orquesta el chat, los juegos y el transporte "relay": los dos teléfonos hablan
-// a través de un broker MQTT público que solo hace de cartero. TODO va cifrado de
-// extremo a extremo, así que el broker no puede leer nada.
+// a través de un broker MQTT (propio si está configurado, públicos de
+// respaldo) que solo hace de cartero. TODO va cifrado de extremo a extremo,
+// así que el broker no puede leer nada.
 //
-//   - Estado de conexión (en línea / conectando / sin conexión).
+//   - Estado de conexión (en línea / conectando / sin conexión) y presencia
+//     de la pareja (baliza retenida cada 90 s).
 //   - Historial local en AsyncStorage (solo texto descifrado y rutas de fotos
 //     guardadas en el propio dispositivo; NUNCA en un servidor).
 //   - Bandeja de salida: lo que no se pudo entregar queda "pendiente" y se
 //     reintenta hasta recibir el ACK de la pareja.
+//   - Push "despertador": si la pareja está desconectada, además del relay se
+//     le envía un aviso GENÉRICO vía Expo Push Service para que su app se
+//     despierte y recoja lo encolado (avisos aunque la app esté minimizada;
+//     el contenido del mensaje NUNCA sale de vuestros teléfonos).
 //   - Juegos compartidos: al abrir un juego se sincroniza con la pareja, para
 //     que ambos vean el mismo reto aunque estén lejos.
 //   - Borrado local: historial y fotos se pueden eliminar del dispositivo.
@@ -83,6 +98,14 @@ const RETRY_INTERVAL = 12000;
 const GAME_BEACON_INTERVAL = 6000;
 const TTL_CHECK_INTERVAL = 60000;
 const TTL_KEY = "duo.retention.days";
+const CLIENT_ID_KEY = "duo.client.id";
+const BG_FETCH_TIMEOUT_MS = 15000;
+
+// Token de push de la pareja (desperta su app cuando estamos desconectados).
+// Es señalización, no contenido: el token viaja cifrado E2E por el relay.
+function pushTokenKey(coupleId) {
+  return `duo.push.token.${coupleId}`;
+}
 // Archivos: tope duro y ritmo de envío. Sin el tope, un vídeo grande leído
 // entero en base64 congelaba la app y podía cerrarla por memoria; sin la pausa
 // entre trozos, los ~170 trozos de un vídeo de 6 MB se publicaban de golpe y
@@ -102,6 +125,7 @@ export function P2PProvider({ children }) {
   const [pairedResult, setPairedResult] = useState(null);
   const [gameSession, setGameSession] = useState(null); // {gameId, level, prompt, host, ts}
   const [incomingGame, setIncomingGame] = useState(null); // {gameId, level, ts}
+  const [partnerOnline, setPartnerOnline] = useState(true); // optimista: sin push hasta prueba de lo contrario
 
   const relayRef = useRef(null);
   const assemblerRef = useRef(new PhotoAssembler());
@@ -117,8 +141,14 @@ export function P2PProvider({ children }) {
   const flushRef = useRef(() => {});
   const gameRef = useRef(null);
   const sendGameRef = useRef(() => false);
+  const partnerOnlineRef = useRef(true);
+  const myPushTokenRef = useRef(null);
+  const partnerPushTokenRef = useRef(null);
+  const lastWakePushRef = useRef(0);
+  const announcePushTokenRef = useRef(() => {});
   sessionRef.current = session;
   keysRef.current = keys;
+  partnerOnlineRef.current = partnerOnline;
 
   const coupleId = session?.linked ? session.coupleId : null;
   const partnerPub = session?.linked ? session.partnerPub : null;
@@ -200,21 +230,60 @@ export function P2PProvider({ children }) {
     relayRef.current = relay;
     relay.onEvent((type, data) => {
       if (type === "status") setStatus(data);
-      else if (type === "session") flushRef.current();
-      else if (type === "frame") handleFrame(data);
+      else if (type === "presence") setPartnerOnline(!!data.online);
+      else if (type === "session") {
+        flushRef.current();
+        // Con la sesión en línea anuncio mi token de push: así la pareja
+        // puede despertarme (genérico) cuando yo esté desconectado.
+        announcePushTokenRef.current();
+      } else if (type === "frame") handleFrame(data);
       else if (type === "pair-request")
         setPendingPair({ ...data, ts: Date.now() });
       else if (type === "paired") setPairedResult(data);
     });
 
+    if (coupleId) {
+      AsyncStorage.getItem(pushTokenKey(coupleId))
+        .then((t) => {
+          partnerPushTokenRef.current = t || null;
+        })
+        .catch(() => {});
+    } else {
+      partnerPushTokenRef.current = null;
+    }
+
     if (priv && myPub) {
-      relay.configure({
-        keys,
-        partnerPub,
-        myName: session?.myName,
-        myEmoji: session?.myEmoji,
+      // clientId ÚNICO por instalación (se genera una vez y se guarda):
+      // si los dos teléfonos usaran el mismo, el broker los expulsaría en
+      // bucle y se perderían mensajes (causa raíz de las viejas pérdidas).
+      (async () => {
+        let suffix = null;
+        try {
+          suffix = await AsyncStorage.getItem(CLIENT_ID_KEY);
+          if (!suffix) {
+            suffix = Array.from({ length: 16 }, () =>
+              Math.floor(Math.random() * 16).toString(16)
+            ).join("");
+            await AsyncStorage.setItem(CLIENT_ID_KEY, suffix);
+          }
+        } catch {
+          suffix = Date.now().toString(16);
+        }
+        relay.configure({
+          keys,
+          partnerPub,
+          myName: session?.myName,
+          myEmoji: session?.myEmoji,
+          clientId: deviceClientId(suffix),
+        });
+        relay.start();
+      })();
+      registerForPush().then((token) => {
+        myPushTokenRef.current = token;
+        if (token && statusRef.current === "online") {
+          announcePushTokenRef.current();
+        }
       });
-      relay.start();
     } else {
       relay.stop();
     }
@@ -236,6 +305,41 @@ export function P2PProvider({ children }) {
       if (statusRef.current === "online") flushRef.current();
     }, RETRY_INTERVAL);
     return () => clearInterval(iv);
+  }, []);
+
+  // Respaldo en segundo plano: si Android ha congelado el socket al
+  // minimizar, cada ~15 min el sistema despierta esta tarea, reconectamos y
+  // caen los mensajes encolados (sesión persistente del broker) con su
+  // aviso local. El push remoto es el camino rápido; esto es la red de
+  // seguridad para cuando FCM no llegue.
+  useEffect(() => {
+    const onBackgroundFetch = () => {
+      try {
+        relayRef.current?.wake();
+      } catch {}
+      setTimeout(() => {
+        try {
+          BackgroundFetch.finish();
+        } catch {}
+      }, BG_FETCH_TIMEOUT_MS);
+    };
+    (async () => {
+      try {
+        await BackgroundFetch.configure(
+          {
+            minimumFetchInterval: 15,
+            stopOnTerminate: false,
+            startOnBoot: false,
+            enableHeadless: false,
+            requiredNetworkType: BackgroundFetch.NETWORK_TYPE_ANY,
+          },
+          onBackgroundFetch
+        );
+      } catch (e) {
+        log("background-fetch no disponible:", e?.message);
+      }
+    })();
+    return () => {};
   }, []);
 
   // Auto-destrucción local: cada minuto comprobamos la retención elegida y
@@ -358,6 +462,49 @@ export function P2PProvider({ children }) {
 
   const sendFrame = useCallback((frame) => {
     return relayRef.current?.send(frame) || false;
+  }, []);
+
+  // ------------------------------------------------- push "despertador" ----
+  // Anuncio mi token de push a la pareja (va cifrado E2E como un mensaje
+  // más; ella lo guarda sin burbuja). Ella lo usará para enviarme un aviso
+  // GENÉRICO que despierte mi app cuando yo esté desconectado.
+  const announcePushToken = useCallback(() => {
+    const token = myPushTokenRef.current;
+    if (!token || !priv || !partnerPub) return;
+    const frame = buildMsg(
+      `m_${randomId()}`,
+      encodePushToken(token),
+      priv,
+      partnerPub
+    );
+    if (frame) relayRef.current?.send(frame);
+  }, [priv, partnerPub]);
+  announcePushTokenRef.current = announcePushToken;
+
+  const storePartnerPushToken = useCallback((token) => {
+    partnerPushTokenRef.current = token || null;
+    const cid = sessionRef.current?.coupleId;
+    if (!cid) return;
+    if (token) AsyncStorage.setItem(pushTokenKey(cid), token).catch(() => {});
+    else AsyncStorage.removeItem(pushTokenKey(cid)).catch(() => {});
+  }, []);
+
+  // Solo si la pareja está desconectada y ha pasado el hueco mínimo:
+  // el aviso lleva SIEMPRE texto genérico (privacidad), nunca el mensaje.
+  const maybeWakePush = useCallback(() => {
+    const token = partnerPushTokenRef.current;
+    if (
+      !shouldWakePush({
+        hasToken: !!token,
+        online: partnerOnlineRef.current,
+        lastSentAt: lastWakePushRef.current,
+        now: Date.now(),
+      })
+    ) {
+      return;
+    }
+    lastWakePushRef.current = Date.now();
+    sendWakePush(token);
   }, []);
 
   // ----------------------------------------------------------- juegos ------
@@ -594,6 +741,9 @@ export function P2PProvider({ children }) {
       sendingRef.current.add(row.id);
       const done = () => sendingRef.current.delete(row.id);
       const ok = sendFrameFor(row);
+      // Si la pareja está desconectada (app minimizada/cerrada), además del
+      // relay le mandamos el aviso genérico que despierta su app (push).
+      if (!partnerOnlineRef.current) maybeWakePush();
       const settle = (r) => {
         done();
         if (r) markSent(row.id);
@@ -608,7 +758,7 @@ export function P2PProvider({ children }) {
       settle(ok);
       return ok;
     },
-    [sendFrameFor, markSent, markFailed]
+    [sendFrameFor, markSent, markFailed, maybeWakePush]
   );
 
   // Reintento manual desde la burbuja (la cola también reenvía sola cada pocos
@@ -816,6 +966,12 @@ export function P2PProvider({ children }) {
         if (got && vaultIsReady()) sendFrame(buildAck(frame.id));
         if (!got) return;
         const decoded = decodeChat(got.text);
+        if (decoded.type === "push-token") {
+          // Señalización interna: guardo el token de la pareja para poder
+          // despertar su app cuando esté desconectada. Sin burbuja ni aviso.
+          if (decoded.token) storePartnerPushToken(decoded.token);
+          return;
+        }
         if (decoded.type === "reaction") {
           applyIncomingReaction(decoded.target, decoded.emoji);
           return;
@@ -903,6 +1059,7 @@ export function P2PProvider({ children }) {
       sendFrame,
       handleGameFrame,
       applyIncomingReaction,
+      storePartnerPushToken,
     ]
   );
   handleFrameRef.current = handleFrame;
@@ -994,6 +1151,7 @@ export function P2PProvider({ children }) {
       value={{
         ready: !!(priv && myPub),
         status, // offline | connecting | online
+        partnerOnline, // presencia de la pareja (baliza retenida del relay)
         messages,
         typing,
         sendText,

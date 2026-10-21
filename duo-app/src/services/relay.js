@@ -1,18 +1,28 @@
 // Transporte "relay": los dos teléfonos se hablan a través de un broker MQTT
-// PÚBLICO y GRATUITO, que actúa solo como cartero. TODO el contenido va cifrado
-// de extremo a extremo (cryptocore), así que el broker no puede leer nada; los
-// temas son hashes que nadie puede adivinar sin las claves.
+// que actúa solo como cartero. TODO el contenido va cifrado de extremo a
+// extremo (cryptocore), así que el broker no puede leer nada; los temas son
+// hashes que nadie puede adivinar sin las claves.
 //
-// Ventaja frente a la conexión directa (LAN/WebRTC): funciona SIEMPRE y desde
-// cualquier red (casa, datos móviles, operadores con NAT estricto), sin abrir
-// puertos, sin servidores de señalización y sin pagar nada.
+// v0.8.0 — blindaje de conexión:
+//   - clientId ÚNICO por teléfono (si los dos usan el mismo, el broker expulsa
+//     a uno cada vez que el otro se conecta: bucle de patines y mensajes
+//     perdidos; era la principal causa de las desconexiones).
+//   - Relay propio (EMQX Serverless, relayconfig.js) como canal principal y
+//     brokers públicos como respaldo; con conmutación automática si el canal
+//     activo se cae tres veces seguidas.
+//   - Sesión persistente + QoS 1: el broker encola los mensajes de la pareja
+//     mientras este teléfono está desconectado y los entrega al reconectar.
+//   - Presencia: cada teléfono mantiene una baliza retenida (cada 90 s). Si
+//     la pareja está desconectada, el emisor envía además un push genérico
+//     (Expo Push) para despertar la app: "aviso como WhatsApp".
 //
 // La API imita a la del transporte directo (P2P) para que la app no cambie:
 //   onEvent, configure, start, stop, wake, send
 //   startPairing, joinPairing, acceptPairing, rejectPairing, cancelPairing
-// Eventos: "status", "session", "frame", "pair-request", "paired".
+// Eventos: "status", "session", "frame", "pair-request", "paired", "presence".
 
 import { MqttWsClient, MQTT_BROKERS } from "./mqttws";
+import { PRIVATE_BROKERS } from "./relayconfig";
 import { buildPairReq, verifyPairReq, buildPairOk, verifyPairOk } from "./protocol";
 import {
   deriveCoupleId,
@@ -23,6 +33,10 @@ import {
 import {
   pairTopic,
   chatTopic,
+  presenceTopic,
+  buildPresence,
+  parsePresence,
+  isPresenceStale,
   selfIdFor,
   buildPairQr,
   parsePairQr,
@@ -34,6 +48,14 @@ const PAIR_TIMEOUT = 90000;
 const PAIR_REPUBLISH = 3000;
 const BROKER_TIMEOUT = 12000;
 const CONNECT_WAIT = 15000;
+const PRESENCE_HEARTBEAT = 90000; // baliza propia cada 90 s (caduca a los 3 min)
+const DROPS_FOR_FAILOVER = 3; // caídas seguidas -> probamos otro broker
+
+// Lista de candidatos: relay propio primero, brokers públicos de respaldo.
+const BROKERS = [
+  ...PRIVATE_BROKERS.map((b) => ({ url: b.url, auth: b.user ? { user: b.user, pass: b.pass } : null })),
+  ...MQTT_BROKERS.map((url) => ({ url, auth: null })),
+];
 
 function log(...args) {
   if (global.__DUO_DEBUG) console.log("[duo-relay]", ...args);
@@ -65,6 +87,12 @@ export class Relay {
     this.sessionAnnounced = false;
     this.brokerIndex = 0;
     this.probing = false;
+    this.drops = 0; // caídas desde la última sesión sana (conmutación)
+    this.partnerOnline = false;
+    this.presenceSelf = null; // tema retenido con NUESTRA baliza
+    this.presencePartner = null; // tema retenido con la baliza de la pareja
+    this.presenceTs = 0; // ts de la última baliza recibida de la pareja
+    this.presenceTimer = null;
   }
 
   // ------------------------------------------------------------- eventos --
@@ -89,6 +117,11 @@ export class Relay {
     if (cfg?.keys?.publicKeyB64) this.selfId = selfIdFor(cfg.keys.publicKeyB64);
     if (cfg.partnerPub !== prev) {
       this.sessionAnnounced = false;
+      this.stopPresence();
+      this.presenceSelf = null;
+      this.presencePartner = null;
+      this.presenceTs = 0;
+      this.setPartnerOnline(false);
       if (this.chatTopicValue) {
         try {
           this.client?.unsubscribe(this.chatTopicValue);
@@ -123,6 +156,8 @@ export class Relay {
     this.chatTopicValue = null;
     this.pairTopicValue = null;
     this.sessionAnnounced = false;
+    this.stopPresence();
+    this.publishPresence(false); // aviso retenido "me voy" (best effort)
     if (this.client) {
       try {
         this.client.close();
@@ -148,6 +183,7 @@ export class Relay {
   ensureClient() {
     if (this.client) return this.client;
     const client = new MqttWsClient({
+      clientId: this.cfg?.clientId, // ÚNICO por teléfono: evita la expulsión
       onMessage: (topic, payload) => this.onMessage(topic, payload),
       onStatus: () => this.onClientStatus(),
     });
@@ -157,23 +193,25 @@ export class Relay {
     return client;
   }
 
-  // Prueba los brokers hasta encontrar uno que responda; luego deja que el
-  // cliente se reconecte solo a ese.
+  // Prueba los brokers (propio primero) hasta encontrar uno que responda; si
+  // el activo se cae tres veces seguidas, volvemos a sondear rotando al
+  // siguiente de la lista en lugar de quedarnos pegados a uno malo.
   async probeBrokers(client) {
     if (this.probing) return;
     this.probing = true;
     try {
-      for (let i = 0; i < MQTT_BROKERS.length; i++) {
+      for (let i = 0; i < BROKERS.length; i++) {
         if (this.stopped) return;
-        const url = MQTT_BROKERS[(this.brokerIndex + i) % MQTT_BROKERS.length];
+        const cand = BROKERS[(this.brokerIndex + i) % BROKERS.length];
         try {
-          await withTimeout(client.connect(url), BROKER_TIMEOUT);
-          this.brokerIndex = (this.brokerIndex + i) % MQTT_BROKERS.length;
+          client.setAuth(cand.auth);
+          await withTimeout(client.connect(cand.url), BROKER_TIMEOUT);
+          this.brokerIndex = (this.brokerIndex + i) % BROKERS.length;
           client.setAutoReconnect(true);
-          log("conectado al broker", url);
+          log("conectado al broker", cand.url);
           return;
         } catch (e) {
-          log("broker no disponible:", url);
+          log("broker no disponible:", cand.url);
         }
       }
       // Ninguno respondió: probamos de nuevo en unos segundos.
@@ -186,6 +224,21 @@ export class Relay {
     }
   }
 
+  // Conmutación: tiramos el cliente y creamos otro empezando por el SIGUIENTE
+  // broker de la lista (con la sonda inicial).
+  reprobeBroker() {
+    log("varias caídas seguidas: probamos otro broker");
+    this.brokerIndex = (this.brokerIndex + 1) % BROKERS.length;
+    const old = this.client;
+    this.client = null;
+    if (old) {
+      try {
+        old.close();
+      } catch {}
+    }
+    if (!this.stopped) this.ensureClient();
+  }
+
   onClientStatus() {
     const connected = !!this.client?.connected;
     if (connected) {
@@ -193,6 +246,8 @@ export class Relay {
       if (this.chatTopicValue) this.client.subscribe(this.chatTopicValue);
       if (this.chatTopicValue) {
         this.setStatus("online");
+        this.drops = 0; // sesión sana: contador de caídas a cero
+        this.publishPresence(true); // baliza retenida al reconectar
         if (!this.sessionAnnounced) {
           this.sessionAnnounced = true;
           this.emit("session", { relay: true });
@@ -201,8 +256,16 @@ export class Relay {
         this.setStatus("connecting");
       }
     } else {
+      const hadSession = !!this.chatTopicValue;
       this.sessionAnnounced = false;
       this.setStatus(this.cfg?.partnerPub ? "connecting" : "offline");
+      if (hadSession && !this.stopped) {
+        this.drops++;
+        if (this.drops >= DROPS_FOR_FAILOVER) {
+          this.drops = 0;
+          this.reprobeBroker();
+        }
+      }
     }
   }
 
@@ -234,8 +297,15 @@ export class Relay {
       this.cfg.partnerPub
     );
     this.chatTopicValue = chatTopic(coupleId);
+    // Presencia: nuestro tema propio retenido + el de la pareja. Son temas
+    // distintos por teléfono (derivados del selfId de cada uno).
+    this.presenceSelf = presenceTopic(coupleId, this.selfId);
+    this.presencePartner = presenceTopic(coupleId, selfIdFor(this.cfg.partnerPub));
+    this.startPresence();
     if (this.client) {
       this.client.subscribe(this.chatTopicValue);
+      this.client.subscribe(this.presencePartner);
+      this.publishPresence(true);
       if (this.client.connected && !this.sessionAnnounced) {
         this.sessionAnnounced = true;
         this.setStatus("online");
@@ -244,15 +314,62 @@ export class Relay {
     }
   }
 
+  // ----------------------------------------------------------- presencia --
+  startPresence() {
+    this.stopPresence();
+    this.presenceTimer = setInterval(() => {
+      this.publishPresence(true);
+      // Caducidad: si la baliza de la pareja lleva demasiado sin renovarse,
+      // la damos por caída (y dejamos de enviar push a su teléfono).
+      if (this.presenceTs && isPresenceStale(this.presenceTs)) {
+        this.presenceTs = 0;
+        this.setPartnerOnline(false);
+      }
+    }, PRESENCE_HEARTBEAT);
+  }
+
+  stopPresence() {
+    if (this.presenceTimer) {
+      clearInterval(this.presenceTimer);
+      this.presenceTimer = null;
+    }
+  }
+
+  publishPresence(on) {
+    if (!this.client?.connected || !this.presenceSelf) return;
+    // Retenida: el broker guarda el último estado y lo entrega a quien se
+    // suscriba después (así sabemos al conectar si la pareja está en línea).
+    this.client.publish(this.presenceSelf, buildPresence(on), 0, true);
+  }
+
+  setPartnerOnline(v) {
+    if (this.partnerOnline === v) return;
+    this.partnerOnline = v;
+    this.emit("presence", { online: v });
+  }
+
+  // Envía por el relay con QoS 1: el broker encola para la sesión de la
+  // pareja (sesión persistente) y no se pierde si su socket cae un instante.
   send(frame) {
     if (!this.client?.connected || !this.chatTopicValue) return false;
     return this.client.publish(
       this.chatTopicValue,
-      buildEnvelope(this.selfId, frame)
+      buildEnvelope(this.selfId, frame),
+      1
     );
   }
 
   onMessage(topic, payload) {
+    // Baliza de presencia de la pareja: NO lleva sobre cifrado (solo marca
+    // "estoy aquí" con un sello temporal; no hay contenido que proteger).
+    if (topic === this.presencePartner) {
+      const p = parsePresence(payload);
+      if (p) {
+        this.presenceTs = p.ts;
+        this.setPartnerOnline(p.on === 1 && !isPresenceStale(p.ts));
+      }
+      return;
+    }
     const env = parseEnvelope(payload);
     if (!env) return;
     if (env.s === this.selfId) return; // eco de lo que publicamos nosotros
