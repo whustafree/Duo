@@ -12,4 +12,10 @@
 // Privacidad: el contenido sigue cifrado de extremo a extremo; el broker
 // (propio o público) solo ve metadatos (temas hasheados y tamaños).
 
-export const PRIVATE_BROKERS = [];
+export const PRIVATE_BROKERS = [
+  {
+    url: "wss://dc111c11.ala.us-east-1.emqxsl.com:8084/mqtt",
+    user: "whustaf",
+    pass: "claudia1988",
+  },
+];
