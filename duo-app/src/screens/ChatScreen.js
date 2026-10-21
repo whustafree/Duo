@@ -232,12 +232,6 @@ function MessageBubble({ item, partnerName, onLongPress, onRetry }) {
   );
 }
 
-const STATUS_TEXT = {
-  online: "en línea 💞",
-  connecting: "conectando…",
-  offline: "sin conexión",
-};
-
 export default function ChatScreen() {
   const { session } = useSession();
   const {
@@ -494,7 +488,11 @@ export default function ChatScreen() {
               ? "en línea"
               : partnerLastSeen
               ? `última vez ${stampOf(partnerLastSeen)}`
-              : STATUS_TEXT[status] || STATUS_TEXT.offline}
+              : status === "connecting"
+              ? "conectando…"
+              : status === "offline"
+              ? "sin conexión"
+              : "desconectada"}
           </Text>
         </View>
         <Pressable
