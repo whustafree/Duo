@@ -425,6 +425,8 @@ export function P2PProvider({ children }) {
           level: g.level,
           prompt: g.prompt,
           mode: g.mode,
+          dice: g.dice,
+          drawTs: g.drawTs,
           replies: g.replies,
         });
       }
@@ -590,6 +592,7 @@ export function P2PProvider({ children }) {
         prompt: null,
         mode: null,
         dice: null,
+        drawTs: null,
         replies: [],
         host: "me",
         ts: Date.now(),
@@ -611,6 +614,7 @@ export function P2PProvider({ children }) {
         prompt: null,
         mode: null,
         dice: null,
+        drawTs: null,
         host: "me",
         ts: Date.now(),
       };
@@ -636,6 +640,7 @@ export function P2PProvider({ children }) {
         prompt: draw.text,
         mode: draw.mode,
         dice: draw.dice,
+        drawTs: ts,
         host: "me",
         ts,
       };
@@ -765,6 +770,12 @@ export function P2PProvider({ children }) {
             ? g.mode
             : prev?.mode ?? null,
         dice: g.dice !== undefined ? g.dice : prev?.dice ?? null,
+        drawTs:
+          g.k === "draw"
+            ? g.ts || null
+            : g.drawTs !== undefined
+            ? g.drawTs
+            : prev?.drawTs ?? null,
         host: "them",
         ts: Date.now(),
       };
@@ -777,10 +788,16 @@ export function P2PProvider({ children }) {
       }
       // La jugada de la pareja también aparece como mensaje en el chat. El id
       // se deriva del sello de la jugada, así los dos teléfonos ven el mismo
-      // mensaje una sola vez (y los avisos de sincronización no lo duplican).
-      if (g.k === "draw" && s.gameId && g.prompt && g.ts) {
+      // mensaje una sola vez. El latido ("sync") reenvía la última jugada por
+      // si se perdió la trama original, y el id evita duplicarla.
+      if (
+        (g.k === "draw" || g.k === "sync") &&
+        s.gameId &&
+        g.prompt &&
+        s.drawTs
+      ) {
         appendMessage({
-          id: `gmsg:${s.gameId}:${g.ts}`,
+          id: `gmsg:${s.gameId}:${s.drawTs}`,
           from: "them",
           kind: "game",
           gameId: s.gameId,
@@ -788,10 +805,14 @@ export function P2PProvider({ children }) {
           dice: s.dice,
           level: s.level,
           text: String(g.prompt),
-          ts: g.ts,
+          ts: s.drawTs,
           pending: false,
         });
-        notifyIfBackground(`🎮 ${sessionRef.current?.partnerName || "Tu pareja"} jugó`);
+        if (g.k === "draw") {
+          notifyIfBackground(
+            `🎮 ${sessionRef.current?.partnerName || "Tu pareja"} jugó`
+          );
+        }
       }
       gameRef.current = s;
       setGameSession(s);
